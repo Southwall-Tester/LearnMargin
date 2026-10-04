@@ -17,6 +17,7 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.generic import ArrayObject, DictionaryObject, FloatObject
 
 from .models import Lesson
+from .study_rhythm import plan_pauses
 
 ROOT = Path(__file__).parent
 NAVIGATION_ZOOM = 1.25
@@ -127,10 +128,17 @@ def build_html(lesson: Lesson, *, layout: str = "a4") -> str:
     )
     environment.filters["md"] = lambda value: markdown(value, image_label=lesson.text.image)
     environment.filters["mdi"] = lambda value: markdown(value, inline=True, image_label=lesson.text.image)
+    pause_plan = plan_pauses(lesson)
+    fallback_pause = {"minutes": 5, "when": lesson.text.pause_when,
+                      "activity": lesson.text.pause_activity, "resume": lesson.text.pause_resume}
+    pause_cards: dict[int, dict[str, dict[str, Any]]] = {}
+    for point in pause_plan:
+        section = lesson.sections[point["section"] - 1]
+        pause = section.pause if point["kind"] == "end" and section.pause else fallback_pause
+        pause_cards.setdefault(point["section"], {})[point["boundary"]] = {"kind": point["kind"], "pause": pause}
     return environment.get_template("lesson.html").render(
         lesson=lesson, text=lesson.text, layout=layout, page_width=210 if layout == "a4" else 286,
-        fallback_pause={"minutes": 5, "when": lesson.text.pause_when,
-                        "activity": lesson.text.pause_activity, "resume": lesson.text.pause_resume},
+        pause_plan=pause_plan, pause_cards=pause_cards,
         has_answers=any(section.practice or any(prompt.answer for prompt in section.study_prompts)
                         for section in lesson.sections),
         source_refs=source_refs, katex_css=Markup(css), katex_script=Markup(katex),

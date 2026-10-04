@@ -23,7 +23,7 @@ class LessonText(BaseModel):
     concept_relations: str = label("概念联系标题：概念关系")
     learning_path: str = label("学习顺序标题：学习路线")
     study_rhythm: str = label("学习节奏提示标题：学习节奏")
-    rhythm_note: str = note("简短提示：可试25分钟专注、5分钟休息；累了或计时先到可记下卡点停下，时长可调整。")
+    rhythm_note: str = note("简短提示：可试25分钟专注、5分钟休息；提示位置只是建议，计时先到或累了可记下位置先停，时长可调整。")
     prerequisites: str = label("前置知识标题：需要的基础")
     contents: str = label("正文目录标题：正文导航")
     answers: str = label("后置答案页标题：参考解答")
@@ -60,7 +60,7 @@ class LessonText(BaseModel):
     scope_topic: str = label("学习范围中的用户知识点标签：知识点")
     scope_units: str = label("学习范围中的总数量标签：材料单元")
     scope_location_note: str = note("范围说明：位置按文件页码、幻灯片或章节编号，不等同于印刷页码。")
-    pause_when: str = note("就地休息条件：若本轮已专注约25分钟，休息5分钟；计时先到可记下卡点先停。")
+    pause_when: str = note("就地休息条件：若距上次休息已专注约25分钟，休息5分钟；时间未到可继续。")
     pause_activity: str = note("兜底休息动作：放下讲义，起身走动或喝水。")
     pause_resume: str = note("就地返回动作：先回想刚读过的核心关系，再从标记处继续。")
 
@@ -70,7 +70,7 @@ def chinese_lesson_text() -> LessonText:
     return LessonText(
         language_tag="zh-CN", document="学习讲义", overview="内容总览", global_view="先理解全局",
         concept_relations="概念关系", learning_path="学习路线", study_rhythm="学习节奏",
-        rhythm_note="可先试 25 分钟专注、5 分钟休息。计时先到或累了，记下卡点即可停下；时长可调整。",
+        rhythm_note="可先按 25 分钟专注、5 分钟休息计时。提示位置只是建议；计时先到或累了，记下位置即可停下，不必等到休息点。",
         prerequisites="需要的基础", contents="正文导航", answers="参考解答", review_sources="复习与来源",
         section="章节", material="材料", view_source="查看原材料", source_comparison="资料对照",
         worked_example="完整例题 · 理解每一步", practice="独立练习", hint="卡住时看这条提示",
@@ -83,6 +83,6 @@ def chinese_lesson_text() -> LessonText:
         scope_all="全部导入内容", scope_primary="主材料单元", scope_reference="参考资料单元",
         scope_topic="知识点", scope_units="材料单元",
         scope_location_note="位置按文件页码、幻灯片或章节编号，不等同于印刷页码。",
-        pause_when="若本轮已专注约25分钟，休息5分钟；计时先到可记下卡点先停。",
+        pause_when="若距上次休息已专注约25分钟，休息5分钟；时间未到可继续。",
         pause_activity="放下讲义，起身走动或喝水。", pause_resume="先回想刚读过的核心关系，再从标记处继续。",
     )
