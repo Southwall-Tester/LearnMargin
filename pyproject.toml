@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "learnmargin"
-version = "0.1.0"
+version = "0.2.0"
 description = "Turn course materials into guided PDF study notes."
 readme = "README.md"
 requires-python = ">=3.11"
