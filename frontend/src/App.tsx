@@ -45,7 +45,7 @@ export default function App() {
   const [settingsNotice, setSettingsNotice] = useState('');
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
-  const [scope, setScope] = useState<Scope>({ mode: 'all', ranges: {}, topics: '' });
+  const [scope, setScope] = useState<Scope>({ mode: 'all', ranges: {}, topics: '', include_prerequisites: true });
   const [notes, setNotes] = useState('');
   const [selectedDifficulties, setSelectedDifficulties] = useState<string[]>([]);
   const [sectionCount, setSectionCount] = useState(4);
@@ -294,6 +294,7 @@ export default function App() {
           <div className="segmented" role="group" aria-label="学习范围方式">{([['all', '全部内容'], ['pages', '指定页码 / 章节'], ['topics', '指定知识点']] as const).map(([value, label]) => <button key={value} aria-pressed={scope.mode === value} className={scope.mode === value ? 'selected' : ''} onClick={() => setScope(current => ({ ...current, mode: value }))}>{label}</button>)}</div>
           {scope.mode === 'all' && selectedDocuments.length > 0 && <div className="scope-summary"><Layers3 size={20} /><p>已勾选 <strong>{selectedDocuments.length}</strong> 份材料，共 <strong>{selectedDocuments.reduce((sum, document) => sum + document.total_units, 0)}</strong> 个来源单元。</p></div>}
           {scope.mode === 'pages' && <div className="ranges">{selectedDocuments.length ? <><p className="helper">主材料按指定范围学习；参考资料自动检索相关内容，跨文件整合并标明出处。</p>{selectedDocuments.map(document => <div className="scope-document" key={document.id}><div className="scope-document-heading"><div><strong>{document.name}</strong><small>共 {document.total_units} {document.unit_label}</small></div><select aria-label={`${document.name} 的材料角色`} value={Object.hasOwn(scope.ranges, document.id) ? 'primary' : 'reference'} onChange={event => setMaterialRole(document, event.target.value === 'primary')}><option value="primary">主材料 · 指定范围</option><option value="reference">参考资料 · 自动检索</option></select></div>{Object.hasOwn(scope.ranges, document.id) && <label className="field scope-range-field">学习范围<input aria-label={`${document.name} 的范围`} value={scope.ranges[document.id]} onChange={event => setScope(current => ({ ...current, ranges: { ...current.ranges, [document.id]: event.target.value } }))} placeholder={`例如 1-${Math.min(3, document.total_units)}`} /><small>使用文件内编号，如 1-3,5；以预览为准，不是教材印刷页码。</small></label>}</div>)}</> : <p className="muted">先导入并勾选材料，再指定主材料的学习范围。</p>}</div>}
+          {scope.mode === 'pages' && selectedDocuments.length > 0 && <label className="checkbox-label"><input type="checkbox" checked={scope.include_prerequisites ?? true} onChange={event => setScope(current => ({ ...current, include_prerequisites: event.target.checked }))} />回查主材料其他页的必要定义与前提</label>}
           {scope.mode === 'topics' && <label className="field topic-field">想弄明白的知识点<textarea rows={3} maxLength={2000} value={scope.topics} onChange={event => setScope(current => ({ ...current, topics: event.target.value }))} placeholder="例如：从前束范式开始，理解量词外移的条件，并能独立完成转换。" /><small>在所有已勾选材料中检索并整合相关知识，讲义标明各处来源。</small></label>}
         </section>
 
