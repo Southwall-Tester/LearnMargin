@@ -343,11 +343,14 @@ async def generate_lesson(request: GenerateRequest, documents: list[Document], s
                 "hint是有限提示，answer含关键步骤，答案将在讲义末尾单独排。"
                 "study_prompts含0～2个必要的就近学习动作，没有实际帮助则留空。文字只为提示服务："
                 "每条用短句说明针对当前哪一步做什么、怎么核对；不凑问题，不泛泛反思，不反复解释学习方法。"
+                "study_prompts只安排学习动作，休息与计时只写在专用pause字段，不在study_prompts重复。"
                 "若侧栏要求回答、解释、判断、重算或计算，kind必须为question且answer填写简短参考答案及关键依据。"
                 "答案在末尾。纯操作提示kind为action、answer为null；check只指明核对路径，不泄露答案。"
                 "id采用章节id加序号，练习如s1-q1，学习提示如s1-a1。章节id和source_refs必须与计划完全相同。"
-                "pause可为null；适合停顿的章节结束处设置5分钟休息，when明确‘若本轮已专注约25分钟’，"
-                "resume指定回来后回想什么再接着学。不能凭页码断言时间已到，不把每页都设置休息。\n"
+                "每节用专用pause字段写休息条件、5分钟时长及回来后的接续动作：minutes为5，"
+                "when明确‘若本轮已专注约25分钟’，activity给简短休息动作，resume指明回来后从哪里接着学。"
+                "计时先到或已经疲劳时可记下当前位置先休息，不要求先完成整节；不能凭页码断言时间已到，"
+                "也不要求每到一页或一节就重新休息。\n"
                 + ("这是最后一节；休息后接复习安排，不要说进入不存在的下一节。\n" if index == len(plan.sections)-1 else "")
                 + f"方法参考：\n{methods}\n当前材料数据：\n{local_material}"
             )
@@ -363,8 +366,11 @@ async def generate_lesson(request: GenerateRequest, documents: list[Document], s
                 "删去重复演算：explanation讲概念及推理，完整数值解法留给worked_example；source_notes只简述"
                 "各资料说法与关系，不再把完整计算抄一遍，正文也不重复另写资料对照清单。"
                 "侧栏凡要求写出、解释、计算、判断、比较、重算或重建公式，均是question并给后置answer；"
-                "不能因为开头写‘遮住’或‘在纸上’就标为action。action仅限计时、休息、翻页、标记位置等"
-                "不要求提交知识答案的动作。核对提示不剧透，when不得引用位于它之后的练习。"
+                "不能因为开头写‘遮住’或‘在纸上’就标为action。action用于翻页、标记位置等不要求提交"
+                "知识答案的学习动作。核对提示不剧透，when不得引用位于它之后的练习。"
+                "每节的休息与计时放在专用pause字段，不在study_prompts重复；pause写清‘若本轮已专注约25分钟’"
+                "的条件、minutes为5、简短activity及回来后的resume。计时先到或疲劳时可以记下当前位置先休息，"
+                "不能要求先完成整节才休息，也不能按页码或章节位置宣称时间已到。"
                 "侧栏和复习安排保持简短具体，修正自相矛盾的数量和不存在的下一节，公式使用LaTeX。"
                 f"\n本节计划：{planned.model_dump_json()}\n真实材料：{local_material}"
                 f"\n待审校初稿JSON：{draft}")
@@ -387,10 +393,11 @@ async def generate_lesson(request: GenerateRequest, documents: list[Document], s
         for index, planned in enumerate(plan.sections):
             group.create_task(write_section(index, planned))
     completed = [section for section in sections if section is not None]
-    if not any(section.pause for section in completed):
-        middle = completed[max(0, len(completed) // 2 - 1)]
-        middle.pause = Pause(when=plan.text.pause_when, activity=plan.text.pause_activity,
-                             resume=plan.text.pause_resume)
+    for index, section in enumerate(completed, 1):
+        if section.pause is None:
+            section.pause = Pause(when=plan.text.pause_when, activity=plan.text.pause_activity,
+                                  resume=plan.text.pause_resume)
+            atomic_json(output / f"section-{index}.json", section.model_dump())
     identifiers = [value.id for section in completed for value in [*section.practice, *section.study_prompts]]
     if len(identifiers) != len(set(identifiers)):
         raise ValueError("模型产生重复的练习或提示编号，请重新生成。")

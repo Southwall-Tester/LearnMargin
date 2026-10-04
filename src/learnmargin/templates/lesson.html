@@ -22,21 +22,24 @@
     {% if has_answers %}<div class="row full toc-row"><div class="main"><a href="#answers">{{ text.answers }}</a></div></div>{% endif %}
     <div class="row full toc-row"><div class="main"><a href="#review">{{ text.review_sources }}</a></div></div>
   </section>
-  {% for section in lesson.sections %}{% set section_no = loop.index %}
-  <section class="flow-section" data-new-page="true" data-label="{{ section.title }}">
+  {% for section in lesson.sections %}{% set section_no = loop.index %}{% set pause = section.pause or fallback_pause %}
+  <section class="flow-section" data-new-page="true" data-label="{{ section.title }}" data-section="{{ section_no }}">
     <div class="row full keep-next"><div class="main" id="section-{{ section_no }}"><p class="eyebrow">{{ text.section }} {{ section_no }}</p><h2 class="section-title">{{ section.title | mdi }}</h2><p class="references">{{ text.material }}: {% for ref in section.source_refs %}{% set source_no = source_refs[ref] %}{% set source = lesson.sources[source_no - 1] %}<a href="#source-{{ source_no }}">[{{ source_no }}] {{ source.document }} · {{ source.label }}</a> <button type="button" class="web-source-button" data-source-ref="{{ ref }}" aria-label="{{ text.view_source }}: {{ source.document }}，{{ source.label }}">{{ text.view_source }}</button>{% if not loop.last %}；{% endif %}{% endfor %}</p></div></div>
-    <div class="row splittable"><div class="main">{{ section.explanation | md }}</div><aside>{% if section.study_prompts %}{% set prompt = section.study_prompts[0] %}{% set prompt_no = 1 %}{% include 'prompt.html' %}{% endif %}</aside></div>
+    <div class="row splittable" data-boundary="explanation"><div class="main">{{ section.explanation | md }}</div><aside>{% if section.study_prompts %}{% set prompt = section.study_prompts[0] %}{% set prompt_no = 1 %}{% include 'prompt.html' %}{% endif %}</aside></div>
     {% if section.source_notes %}
     <div class="row full keep-next"><div class="main"><h3 class="block-label">{{ text.source_comparison }}</h3></div></div>
     {% for note in section.source_notes %}{% set source_no = source_refs[note.ref] %}{% set source = lesson.sources[source_no - 1] %}
     <div class="row full splittable"><div class="main source-note"><p class="source-note-label"><span class="source-role">{{ role_labels[source.role] }}</span> <a href="#source-{{ source_no }}">[{{ source_no }}] {{ source.document }} · {{ source.label }}</a> <button type="button" class="web-source-button" data-source-ref="{{ note.ref }}" aria-label="{{ text.view_source }}: {{ source.document }}，{{ source.label }}">{{ text.view_source }}</button></p>{{ note.explanation | md }}{% if note.relation %}<div class="source-relation">{{ note.relation | md }}</div>{% endif %}</div></div>
     {% endfor %}{% endif %}
     <div class="row keep-next"><div class="main"><h3 class="block-label">{{ text.worked_example }}</h3></div><aside></aside></div>
-    <div class="row splittable"><div class="main worked-example">{{ section.worked_example | md }}</div><aside>{% if section.study_prompts | length > 1 %}{% set prompt = section.study_prompts[1] %}{% set prompt_no = 2 %}{% include 'prompt.html' %}{% endif %}</aside></div>
+    <div class="row splittable" data-boundary="example"><div class="main worked-example">{{ section.worked_example | md }}</div><aside>{% if section.study_prompts | length > 1 %}{% set prompt = section.study_prompts[1] %}{% set prompt_no = 2 %}{% include 'prompt.html' %}{% endif %}</aside></div>
     {% for practice in section.practice %}
-    <div class="row practice splittable"><div class="main" id="practice-{{ section_no }}-{{ loop.index }}"><h3>{{ text.practice }} {{ practice.id }}</h3>{{ practice.prompt | md }}<div class="hint"><span>{{ text.hint }}</span>{{ practice.hint | md }}</div><p><a href="#answer-{{ section_no }}-{{ loop.index }}">{{ text.try_then_answer }} →</a></p></div><aside></aside></div>
+    <div class="row practice splittable" data-boundary="practice-{{ loop.index }}"><div class="main" id="practice-{{ section_no }}-{{ loop.index }}"><h3>{{ text.practice }} {{ practice.id }}</h3>{{ practice.prompt | md }}<div class="hint"><span>{{ text.hint }}</span>{{ practice.hint | md }}</div><p><a href="#answer-{{ section_no }}-{{ loop.index }}">{{ text.try_then_answer }} →</a></p></div><aside></aside></div>
     {% endfor %}
-    {% if section.pause %}<div class="row full pause-row"><div class="main pause"><span class="card-kind">{{ text.pause }} · {{ section.pause.minutes }} {{ text.minutes }}</span><p>{{ section.pause.when | mdi }}</p><p>{{ section.pause.activity | mdi }}</p><p><strong>{{ text.after_pause }}: </strong>{{ section.pause.resume | mdi }}</p></div></div>{% endif %}
+    {% if pause %}<div class="pause-source" hidden>
+      <div class="pause" data-pause-kind="end"><span class="card-kind">{{ text.pause }} · {{ pause.minutes }} {{ text.minutes }}</span><p>{{ pause.when | mdi }}</p><p>{{ pause.activity | mdi }}</p><p><strong>{{ text.after_pause }}: </strong>{{ pause.resume | mdi }}</p></div>
+      <div class="pause" data-pause-kind="middle"><span class="card-kind">{{ text.pause }}</span><p>{{ text.rhythm_note | mdi }}</p><p>{{ text.pause_activity | mdi }}</p><p><strong>{{ text.after_pause }}: </strong>{{ text.pause_resume | mdi }}</p></div>
+    </div>{% endif %}
   </section>
   {% endfor %}
   {% if has_answers %}<section class="flow-section answers" data-new-page="true" data-label="{{ text.answers }}" data-role="answers">
