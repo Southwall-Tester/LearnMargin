@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unicodedata import normalize
 
 import pytest
 from bs4 import BeautifulSoup
@@ -94,7 +95,9 @@ async def test_render_a4_long_content_navigation_and_answer_isolation(tmp_path: 
     assert "SIDEBAR_SENTINEL" in "".join(page.extract_text() for page in reader.pages[answer_index:])
     assert "CHECK_SPOILER_SENTINEL" not in "".join(page.extract_text() for page in reader.pages[:answer_index])
     assert "CHECK_SPOILER_SENTINEL" in "".join(page.extract_text() for page in reader.pages[answer_index:])
-    extracted = "".join(page.extract_text() for page in reader.pages)
+    # Noto CJK may map visually identical glyphs to compatibility radicals in
+    # PDF ToUnicode; compare canonical content without dropping characters.
+    extracted = normalize("NFKC", "".join(page.extract_text() for page in reader.pages))
     assert "D1:1" not in extracted
     assert "$P(B)>0$" not in extracted
     assert "[1] 示例材料" in extracted
@@ -194,10 +197,10 @@ async def test_multiple_materials_show_roles_comparisons_and_human_locations(tmp
     ]
     result = await render_lesson(lesson, tmp_path)
     reader = PdfReader(tmp_path / "lesson.pdf")
-    text = "".join("".join(page.extract_text().split()) for page in reader.pages)
+    text = normalize("NFKC", "".join("".join(page.extract_text().split()) for page in reader.pages))
     assert "资料对照" in text and "主材料通过筛选戴眼镜" in text
-    assert "与主材料一致，补充其公式可用条件" in text
-    assert "教材补充.pdf" in text and "PDF第3页（印刷第5页）" in text
+    assert normalize("NFKC", "与主材料一致，补充其公式可用条件") in text
+    assert "教材补充.pdf" in text and normalize("NFKC", "PDF第3页（印刷第5页）") in text
     assert "课堂笔记.docx" in text and "第2内容段" in text
     assert "查看原材料" not in text  # source-opening controls belong to the hosted Web reader only
     assert all(role in text for role in ["主材料", "参考资料", "主题相关资料"])
