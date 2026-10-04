@@ -10,6 +10,8 @@ import { localArtifact, post, request } from './api';
 import { configError, displayProgress, loadModelPreferences, saveModelPreferences, scopeError, statusLabels } from './domain';
 import type { APIConfig, DocumentSummary, GenerateRequest, Job, Scope, Settings, UnitDetail } from './types';
 import LessonReader from './LessonReader';
+import ConnectionTest from './ConnectionTest';
+import useSectionNavigation from './useSectionNavigation';
 
 const difficulties = ['刚开始学，需要讲清基础', '看答案会，换题不会', '概念和公式容易混', '记得慢，学后容易忘', '经常拖延，很难开始', '近期有考试，需要自测'];
 const initialConfig: APIConfig = {
@@ -36,6 +38,7 @@ function Warning({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  const { navigate, navigationProps } = useSectionNavigation();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [config, setConfig] = useState<APIConfig>(initialConfig);
   const [showSettings, setShowSettings] = useState(false);
@@ -47,6 +50,8 @@ export default function App() {
   const [selectedDifficulties, setSelectedDifficulties] = useState<string[]>([]);
   const [sectionCount, setSectionCount] = useState(4);
   const [layout, setLayout] = useState<'a4' | 'wide'>('a4');
+  const [outputLanguage, setOutputLanguage] = useState('简体中文');
+  const [customLanguage, setCustomLanguage] = useState('');
   const [readingMode, setReadingMode] = useState<'auto' | 'handwritten'>('auto');
   const [uploading, setUploading] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -172,6 +177,9 @@ export default function App() {
     if (submitting) return;
     setError('');
     if (!demo) {
+      if (outputLanguage === 'custom' && !customLanguage.trim()) {
+        setError('请填写输出语言。'); return;
+      }
       const invalid = scopeError(selectedDocuments, scope) ?? configError(config);
       if (invalid) { setError(invalid); return; }
       if (readingMode === 'handwritten' && !config.vision) {
@@ -189,12 +197,13 @@ export default function App() {
         document_ids: selected, scope: { ...scope, ranges: Object.fromEntries(Object.entries(scope.ranges).filter(([key]) => selected.includes(key)).map(([key, value]) => [key, value.replace(/，/g, ',')])) },
         api: { ...config, base_url: config.base_url.trim(), model: config.model.trim(), api_key: config.api_key.trim() },
         learner_notes: [...selectedDifficulties, notes.trim()].filter(Boolean).join('；'),
-        language: '简体中文', section_count: sectionCount, layout, reading_mode: readingMode,
+        language: outputLanguage === 'custom' ? customLanguage.trim() : outputLanguage,
+        section_count: sectionCount, layout, reading_mode: readingMode,
       };
       const job = demo ? await post<Job>('/api/demo') : await post<Job>('/api/jobs', body);
       setJobs(current => [job, ...current.filter(item => item.id !== job.id)]);
       setActiveJobId(job.id); setPreviewTab('lesson');
-      document.getElementById('result-panel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      navigate('result-panel');
     } catch (error) { setError(errorText(error)); }
     finally { setSubmitting(false); }
   }
@@ -210,9 +219,7 @@ export default function App() {
   }
 
   function applyPreset(preset: string) {
-    if (preset === 'server' && settings) {
-      setConfig(current => ({ ...current, ...serverModelConfig(settings), api_key: current.api_key }));
-    } else if (preset === 'deepseek') {
+    if (preset === 'deepseek') {
       setConfig(current => ({ ...current, base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'chat_completions', vision: true, json_mode: true }));
     } else if (preset === 'openai') {
       setConfig(current => ({ ...current, base_url: 'https://api.openai.com/v1', model: '', protocol: 'responses', vision: true, json_mode: true }));
@@ -235,10 +242,10 @@ export default function App() {
     <aside className="sidebar" aria-label="工作区导航">
       <a className="brand" href="#main" aria-label="LearnMargin 首页"><span className="brand-icon"><BookOpen size={24} /></span><span>LearnMargin</span></a>
       <nav>
-        <a href="#materials" className="nav-link"><FolderOpen size={18} /> 导入材料 <span>01</span></a>
-        <a href="#scope" className="nav-link"><Layers3 size={18} /> 选择范围 <span>02</span></a>
-        <a href="#learning" className="nav-link"><BookOpenCheck size={18} /> 安排学习 <span>03</span></a>
-        <a href="#result-panel" className="nav-link"><FileText size={18} /> 我的讲义 <span>04</span></a>
+        <a {...navigationProps('materials')} className="nav-link"><FolderOpen size={18} /> 导入材料 <span>01</span></a>
+        <a {...navigationProps('scope')} className="nav-link"><Layers3 size={18} /> 选择范围 <span>02</span></a>
+        <a {...navigationProps('learning')} className="nav-link"><BookOpenCheck size={18} /> 安排学习 <span>03</span></a>
+        <a {...navigationProps('result-panel')} className="nav-link"><FileText size={18} /> 我的讲义 <span>04</span></a>
       </nav>
       <div className="sidebar-footer"><span className={`connection-dot ${settings ? 'online' : ''}`} />{settings ? '本地工作区已连接' : '正在连接本地服务'}<span>v0.1</span></div>
     </aside>
@@ -250,16 +257,17 @@ export default function App() {
       {connectionError && <div className="error-banner" role="status"><TriangleAlert size={18} /><p>{connectionError} 正在自动重连。</p></div>}
 
       {showSettings && <section className="card model-card" id="model-settings" aria-labelledby="settings-title">
-        <div className="card-heading"><div className="heading-icon"><Settings2 size={19} /></div><div><h2 id="settings-title">连接你的模型</h2><p>支持 DeepSeek，以及兼容 Chat Completions / Responses 的服务。</p></div><button className="icon-button" aria-label="收起模型设置" onClick={() => setShowSettings(false)}><X size={18} /></button></div>
-        <div className="preset-row"><span className="field-label">快速填写</span>{[['server', '服务默认'], ['deepseek', 'DeepSeek'], ['openai', 'OpenAI'], ['compatible', '兼容 API']].map(([value, label]) => <button key={value} className="button small secondary" onClick={() => applyPreset(value)}>{label}</button>)}</div>
+        <div className="card-heading"><div className="heading-icon"><Settings2 size={19} /></div><div><h2 id="settings-title">连接你的模型</h2></div><button className="icon-button" aria-label="收起模型设置" onClick={() => setShowSettings(false)}><X size={18} /></button></div>
+        <div className="preset-row"><span className="field-label">快速填写</span>{[['deepseek', 'DeepSeek'], ['openai', 'OpenAI'], ['compatible', '兼容 API']].map(([value, label]) => <button key={value} className="button small secondary" onClick={() => applyPreset(value)}>{label}</button>)}</div>
         <div className="settings-grid">
-          <label className="field">API 地址<input value={config.base_url} onChange={event => changeConfig('base_url', event.target.value)} placeholder="https://api.deepseek.com" autoComplete="url" spellCheck={false} /></label>
+          <label className="field">API 地址<input value={config.base_url} onChange={event => changeConfig('base_url', event.target.value)} placeholder="https://api.example.com/v1" autoComplete="url" spellCheck={false} /></label>
           <label className="field">模型名称<input value={config.model} onChange={event => changeConfig('model', event.target.value)} placeholder="填写服务商提供的模型 ID" spellCheck={false} /></label>
           <label className="field">API Key <span className="optional">仅保留在当前页面内存</span><input value={config.api_key} type="password" autoComplete="off" name="learnmargin-api-key" onChange={event => changeConfig('api_key', event.target.value)} placeholder={settings?.api.has_api_key ? '已配置服务端密钥，可在此覆盖' : '填写你的 API Key'} /></label>
           <label className="field">接口协议<select value={config.protocol} onChange={event => changeConfig('protocol', event.target.value as APIConfig['protocol'])}><option value="chat_completions">Chat Completions（通用兼容）</option><option value="responses">Responses</option></select></label>
         </div>
         <div className="capability-row"><label className="checkbox-label"><input type="checkbox" checked={config.vision} onChange={event => changeConfig('vision', event.target.checked)} />模型支持图片理解</label><label className="checkbox-label"><input type="checkbox" checked={config.json_mode} onChange={event => changeConfig('json_mode', event.target.checked)} />启用 JSON 输出模式</label><label className="timeout-label">请求超时<input aria-label="请求超时秒数" type="number" min={10} max={600} value={config.timeout_seconds} onChange={event => changeConfig('timeout_seconds', Math.max(10, Math.min(600, Number(event.target.value) || 180)))} />秒</label></div>
         <p className="helper"><CircleHelp size={14} />按所选模型实际能力配置。关闭图片理解后，扫描页、图片中的图表或公式可能无法读取；请使用视觉模型或提供可提取的文本。</p>
+        <ConnectionTest config={config} />
         <div className="settings-bottom"><span className="helper">生成时，所选材料会发送至你配置的模型服务。</span><button className="button primary small" onClick={() => { const invalid = configError(config); if (invalid) { setError(invalid); return; } saveModelPreferences(config); setSettingsNotice('模型偏好已保存，API Key 未写入浏览器存储。'); }}>保存模型偏好</button></div>
         {settingsNotice && <p className="success-text" role="status"><Check size={15} />{settingsNotice}</p>}
       </section>}
@@ -292,6 +300,8 @@ export default function App() {
         <section className="card" id="learning" aria-labelledby="learning-title"><div className="card-heading"><span className="step-number">03</span><div><h2 id="learning-title">学习需求与版式</h2></div><span className="optional">可选</span></div>
           <div className="difficulty-chips" role="group" aria-label="学习困难">{difficulties.map(value => <button className={`choice-chip ${selectedDifficulties.includes(value) ? 'checked' : ''}`} key={value} aria-pressed={selectedDifficulties.includes(value)} onClick={() => setSelectedDifficulties(current => current.includes(value) ? current.filter(item => item !== value) : [...current, value])}>{selectedDifficulties.includes(value) ? <Check size={14} /> : <Plus size={14} />}{value}</button>)}</div>
           <label className="field learning-notes">补充你的基础或目标<textarea rows={2} maxLength={1500} value={notes} onChange={event => setNotes(event.target.value)} placeholder="例如：大一，第一次学谓词逻辑；希望每个公式都有直观解释。" /></label>
+          <label className="field output-language-field">输出语言<select value={outputLanguage} onChange={event => setOutputLanguage(event.target.value)}><option value="简体中文">简体中文</option><option value="繁體中文">繁體中文</option><option value="English">English</option><option value="日本語">日本語</option><option value="custom">自定义</option></select></label>
+          {outputLanguage === 'custom' && <label className="field custom-language-field">自定义语言<input value={customLanguage} maxLength={80} onChange={event => setCustomLanguage(event.target.value)} placeholder="例如：Deutsch" /></label>}
           <label className="field reading-mode-field">材料识读<select aria-label="材料识读" aria-describedby="reading-mode-help" value={readingMode} onChange={event => setReadingMode(event.target.value as 'auto' | 'handwritten')}><option value="auto">自动识读 · 扫描页自动使用视觉模型</option><option value="handwritten">手写讲义 · 逐页识读文字与公式</option></select><small id="reading-mode-help">识读会增加 API 调用；疑点保留供原页核对。</small></label>
           <div className="lesson-options"><label className="field">讲解章节数<select value={sectionCount} onChange={event => setSectionCount(Number(event.target.value))}>{[2, 3, 4, 5, 6, 7, 8].map(number => <option key={number} value={number}>{number} 个学习章节</option>)}</select></label><label className="field">PDF 版式<select value={layout} onChange={event => setLayout(event.target.value as 'a4' | 'wide')}><option value="a4">A4 标准版 · 打印 / 平板</option><option value="wide">电脑宽版 · 更宽阅读区域</option></select></label></div>
           <p className="helper">{layout === 'a4' ? '正文与学习侧栏都排在 A4 页面内。' : '更宽的页面为正文和侧栏提供额外空间。'} 章节数影响讲解深度，不等于最终页数。</p>

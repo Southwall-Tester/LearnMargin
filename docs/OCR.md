@@ -6,7 +6,7 @@
 
 ## 已做的真实检查
 
-2026-10-04，用默认 DeepSeek 多模态接口读取以下公开真实笔迹，并人工对照图像。两条数学式成功保留分数、角符号和度数，中文样本输出完整诗句并列出若干待核对处。样本数量很小；这不证明任意中文草写、长页、涂改或复杂公式都能正确识读，疑点的定位也仍需核对。
+2026-10-04，用 DeepSeek 多模态接口读取以下公开真实笔迹，并人工对照图像。两条数学式成功保留分数、角符号和度数，中文样本输出完整诗句并列出若干待核对处。样本数量很小；这不证明任意中文草写、长页、涂改或复杂公式都能正确识读，疑点的定位也仍需核对。
 
 - 中文草写：[PaddlePaddle 官方示例](https://huggingface.co/spaces/PaddlePaddle/PP-OCRv5_Online_Demo/resolve/main/examples/handwrite_ch_demo.png)，示例库 [README](https://huggingface.co/spaces/PaddlePaddle/PP-OCRv5_Online_Demo/blob/main/README.md) 标注 Apache-2.0。
 - 手写分数：[UniMERNet 样本](https://raw.githubusercontent.com/opendatalab/UniMERNet/main/asset/streamlit_demo/DirectRecognition/hwe_0000050.png)，识读为 `5/8 + 1/8 = 6/8 = 3/4`。

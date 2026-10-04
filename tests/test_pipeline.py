@@ -5,6 +5,7 @@ import json
 import pytest
 
 from learnmargin import pipeline
+from learnmargin.localization import chinese_lesson_text
 from learnmargin.models import APIConfig, Document, GenerateRequest, Scope, SourceUnit
 from learnmargin.pipeline import generate_lesson, make_units, parse_range, source_content
 from learnmargin.storage import Store
@@ -45,7 +46,8 @@ def plan(*, missing=False, invalid=False, duplicate=False):
         "learning_path": ["理解分母", "比较概率"]},
         "sections": [{"id": "s1", "title": "条件概率", "objective": "理解分母", "source_refs": [first]},
                      {"id": "s1" if duplicate else "s2", "title": "独立性", "objective": "比较概率", "source_refs": [second]}],
-        "review_plan": ["明天不看讲义重新解释分母。"], "method_chapters": [3, 4]}
+        "review_plan": ["明天不看讲义重新解释分母。"], "method_chapters": [3, 4],
+        "text": chinese_lesson_text().model_dump()}
 
 
 def section(index, *, reference=None, duplicate_prompt=False):
@@ -92,6 +94,38 @@ def workspace(tmp_path):
 def request(**kwargs):
     return GenerateRequest(document_ids=[DOC_ID], section_count=2,
                            api=APIConfig(vision=False), **kwargs)
+
+
+@pytest.mark.parametrize("language", ["", "   ", "\n\t", "x" * 81])
+def test_output_language_rejects_blank_or_overlong_values(language):
+    with pytest.raises(ValueError):
+        request(language=language)
+
+
+@pytest.mark.parametrize("language", ["简体中文", "English", "日本語", "Deutsch"])
+async def test_selected_language_reaches_every_writing_stage_and_saved_lesson(workspace, language):
+    store, output = workspace
+    source = document()
+    for unit in source.units:
+        unit.text = "Conditional probability restricts the sample space to a known event. " * 3
+    localized_plan = plan()
+    localized_plan["text"].update({
+        "pause_when": "If you have focused for about 25 minutes, take a 5-minute break.",
+        "pause_activity": "Put down the notes and walk around.",
+        "pause_resume": "Recall the main relationship before continuing.",
+    })
+    provider = SequenceProvider([localized_plan, section(1), section(2)])
+    parameters = request(language=f"  {language}  ")
+    lesson = await generate_lesson(parameters, [source], store, output, provider, lambda *_: None)
+    assert parameters.language == language
+    assert lesson.language == language
+    assert len(provider.calls) == 5  # plan + two drafts + two reviews; no translation call
+    assert all(language in prompt for _, prompt, _ in provider.calls)
+    assert lesson.text.pause_when == localized_plan["text"]["pause_when"]
+    pause = next(item.pause for item in lesson.sections if item.pause)
+    assert pause.resume == localized_plan["text"]["pause_resume"]
+    saved = json.loads((output / "plan.json").read_text(encoding="utf-8"))
+    assert saved["text"]["pause_when"] == lesson.text.pause_when
 
 
 async def test_generation_preserves_scope_sources_and_adds_conditional_rest(workspace):
@@ -310,6 +344,7 @@ async def test_page_scope_preserves_main_pages_and_retrieves_unranged_reference(
     lesson = await generate_lesson(multiple_request(), multiple_documents(), store, output, provider, lambda *_: None)
     assert [source.ref for source in lesson.sources] == expected
     assert [source.role for source in lesson.sources] == ["primary", "reference"]
+    assert lesson.text.scope_location_note in lesson.scope_note
     assert [name for name, *_ in provider.calls].count("StudyFocus") == 1
     assert [name for name, *_ in provider.calls].count("TopicSelection") == 1
     focus_prompt = next(user for name, user, _ in provider.calls if name == "StudyFocus")

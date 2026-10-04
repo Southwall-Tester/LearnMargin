@@ -19,7 +19,7 @@ from . import __version__
 from .config import data_directory, default_api, resolve_api
 from .demo import demo_lesson
 from .ingestion import MAX_UPLOAD_BYTES, SUPPORTED_EXTENSIONS, extract_document, find_libreoffice
-from .models import GenerateRequest
+from .models import APIConfig, ConnectionTestResult, GenerateRequest
 from .pipeline import generate_lesson, parse_range
 from .provider import Provider
 from .storage import Store, atomic_json, new_id, now
@@ -182,6 +182,15 @@ def create_app(root: Path | None = None) -> FastAPI:
         return {"api": values, "limits": {"max_upload_mb": MAX_UPLOAD_BYTES // 1024 // 1024, "max_documents": 8},
                 "formats": sorted(SUPPORTED_EXTENSIONS), "capabilities": {"libreoffice": bool(find_libreoffice()), "browser": browser},
                 "demo_available": True}
+
+    @app.post("/api/connection-test", response_model=ConnectionTestResult)
+    async def connection_test(config: APIConfig):
+        config = resolve_api(config)
+        hostname = urlsplit(config.base_url).hostname
+        if not config.api_key.get_secret_value() and hostname not in {"localhost", "127.0.0.1", "::1"}:
+            raise ValueError("请先为当前 API 服务填写密钥。")
+        async with Provider(config) as provider:
+            return await provider.test_connection()
 
     @app.post("/api/documents", status_code=201)
     async def import_document(file: UploadFile = File(...)):

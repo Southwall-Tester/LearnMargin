@@ -13,11 +13,13 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markdown_it import MarkdownIt
 from markupsafe import Markup
 from playwright.async_api import async_playwright
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
+from pypdf.generic import ArrayObject, DictionaryObject, FloatObject
 
 from .models import Lesson
 
 ROOT = Path(__file__).parent
+NAVIGATION_ZOOM = 1.25
 
 
 class RenderError(ValueError):
@@ -77,7 +79,7 @@ def _math_html(tokens: Any, idx: int, *_: Any) -> str:
     return f'<{tag} class="math" data-display="{display}" data-tex="{tex}">{tex}</{tag}>'
 
 
-def markdown(text: str, *, inline: bool = False) -> Markup:
+def markdown(text: str, *, inline: bool = False, image_label: str = "图示") -> Markup:
     """Accept Markdown/TeX, never executable HTML, external media or active links."""
     parser = MarkdownIt("commonmark", {"html": False, "breaks": True}).enable("table")
     parser.inline.ruler.before("escape", "math", _math_inline)
@@ -86,7 +88,7 @@ def markdown(text: str, *, inline: bool = False) -> Markup:
     parser.renderer.rules["link_open"] = lambda *_: '<span class="source-link">'
     parser.renderer.rules["link_close"] = lambda *_: "</span>"
     parser.renderer.rules["image"] = lambda tokens, idx, *_: (
-        '<span class="image-description">[图示：' + escape(tokens[idx].content) + "]</span>"
+        '<span class="image-description">[' + escape(image_label) + ": " + escape(tokens[idx].content) + "]</span>"
     )
     return Markup(parser.renderInline(text) if inline else parser.render(text))
 
@@ -123,17 +125,60 @@ def build_html(lesson: Lesson, *, layout: str = "a4") -> str:
     environment = Environment(
         loader=FileSystemLoader(ROOT / "templates"), autoescape=select_autoescape(["html", "xml"])
     )
-    environment.filters["md"] = markdown
-    environment.filters["mdi"] = lambda text: markdown(text, inline=True)
+    environment.filters["md"] = lambda value: markdown(value, image_label=lesson.text.image)
+    environment.filters["mdi"] = lambda value: markdown(value, inline=True, image_label=lesson.text.image)
     return environment.get_template("lesson.html").render(
-        lesson=lesson, layout=layout, page_width=210 if layout == "a4" else 286,
+        lesson=lesson, text=lesson.text, layout=layout, page_width=210 if layout == "a4" else 286,
         has_answers=any(section.practice or any(prompt.answer for prompt in section.study_prompts)
                         for section in lesson.sections),
         source_refs=source_refs, katex_css=Markup(css), katex_script=Markup(katex),
-        role_labels={"primary": "主材料", "reference": "参考资料", "topic": "主题相关资料"},
+        role_labels={"primary": lesson.text.source_primary, "reference": lesson.text.source_reference,
+                     "topic": lesson.text.source_topic},
         stylesheet=Markup((ROOT / "templates" / "lesson.css").read_text(encoding="utf-8")),
         paginator=Markup((ROOT / "templates" / "paginate.js").read_text(encoding="utf-8")),
     )
+
+
+def _set_navigation_zoom(path: Path, anchors: dict[str, Any]) -> None:
+    """Keep Chromium's anchor coordinates and pages, but leave fit-page view on a jump."""
+    writer = PdfWriter(clone_from=path)
+
+    def entries():
+        direct = writer.root_object.get("/Dests")
+        if direct is not None:
+            yield from direct.get_object().items()
+        names = writer.root_object.get("/Names")
+        if names is None:
+            return
+        tree = names.get_object().get("/Dests")
+        if tree is None:
+            return
+
+        def walk(node):
+            node = node.get_object()
+            pairs = node.get("/Names", [])
+            yield from zip(pairs[::2], pairs[1::2])
+            for child in node.get("/Kids", []):
+                yield from walk(child)
+
+        yield from walk(tree)
+
+    try:
+        for name, destination in entries():
+            if str(name).lstrip("/") not in anchors:
+                continue
+            destination = destination.get_object()
+            if isinstance(destination, DictionaryObject):
+                destination = destination["/D"]
+            if (not isinstance(destination, ArrayObject) or len(destination) != 5
+                    or destination[1] != "/XYZ"):
+                raise RenderError("PDF 导航目标缺少精确阅读位置，未导出。")
+            destination[4] = FloatObject(NAVIGATION_ZOOM)
+        temporary = path.with_suffix(".navigation.pdf")
+        writer.write(temporary)
+        temporary.replace(path)
+    finally:
+        writer.close()
 
 
 def _pdf_report(path: Path, expected_pages: int, layout: str, expected_links: int,
@@ -176,6 +221,21 @@ def _pdf_report(path: Path, expected_pages: int, layout: str, expected_links: in
                 links += 1
     if links < expected_links:
         raise RenderError("PDF 内部导航有缺失，请检查练习与答案跳转。")
+    navigation_targets = []
+    destinations = reader.named_destinations
+    for anchor_id, position in anchors.items():
+        target = destinations.get("/" + anchor_id) or destinations.get(anchor_id)
+        if target is None and not incoming.get(anchor_id):
+            continue
+        if (target is None or reader.get_destination_page_number(target) + 1 != position["page"]
+                or target.typ != "/XYZ" or target.left is None or target.top is None or target.zoom is None
+                or abs(float(target.left) - position["left"]) > 2
+                or abs(float(target.top) - position["top"]) > 2
+                or abs(float(target.zoom) - NAVIGATION_ZOOM) > .001):
+            raise RenderError("PDF 内部导航未保留目标位置或 125% 阅读缩放。")
+        navigation_targets.append({"id": anchor_id, "page": position["page"],
+                                   "left_pt": float(target.left), "top_pt": float(target.top),
+                                   "zoom": float(target.zoom), "linked_from_pages": incoming.get(anchor_id, [])})
     sidebar_navigation = []
     for anchor_id, expected in anchors.items():
         if not anchor_id.startswith("prompt-answer-"):
@@ -183,7 +243,7 @@ def _pdf_report(path: Path, expected_pages: int, layout: str, expected_links: in
         prompt_id = anchor_id.replace("prompt-answer-", "prompt-", 1)
         pair = {}
         for role, target_id in [("prompt", prompt_id), ("answer", anchor_id)]:
-            target = reader.named_destinations.get("/" + target_id) or reader.named_destinations.get(target_id)
+            target = destinations.get("/" + target_id) or destinations.get(target_id)
             position = anchors[target_id]
             if (target is None or not incoming.get(target_id)
                     or reader.get_destination_page_number(target) + 1 != position["page"]
@@ -193,13 +253,15 @@ def _pdf_report(path: Path, expected_pages: int, layout: str, expected_links: in
                 raise RenderError("侧栏与答案的双向导航未指向对应卡片位置。")
             pair[role] = {"id": target_id, "page": position["page"],
                           "left_pt": float(target.left), "top_pt": float(target.top),
+                          "zoom": float(target.zoom),
                           "expected_left_pt": round(position["left"], 3),
                           "expected_top_pt": round(position["top"], 3),
                           "linked_from_pages": incoming[target_id]}
         sidebar_navigation.append(pair)
     return {"page_count": len(reader.pages), "page_sizes_pt": sizes,
             "text_characters_per_page": text_lengths, "internal_links": links,
-            "sidebar_navigation": sidebar_navigation}
+            "sidebar_navigation": sidebar_navigation, "navigation_zoom": NAVIGATION_ZOOM,
+            "navigation_targets": navigation_targets}
 
 
 async def render_lesson(lesson: Lesson, output_dir: Path, *, layout: str = "a4") -> dict[str, Any]:
@@ -240,6 +302,7 @@ async def render_lesson(lesson: Lesson, output_dir: Path, *, layout: str = "a4")
                            tagged=True, outline=True)
         finally:
             await browser.close()
+    _set_navigation_zoom(pdf_path, report["anchor_positions"])
     pdf = _pdf_report(pdf_path, report["page_count"], layout, report["internal_links"], report["anchor_positions"])
     validation = {**pdf, "layout": layout, "math_count": report["math_count"], "math_errors": [],
                   "overflow": [], "blocked_requests": blocked, "browser_errors": errors,

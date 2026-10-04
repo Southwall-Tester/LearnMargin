@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import html
 import json
+import math
 import tempfile
 from pathlib import Path
 from urllib.parse import quote
@@ -20,6 +21,26 @@ from playwright.async_api import async_playwright
 
 def e(value):
     return html.escape(str(value), quote=True)
+
+
+def parse_navigation_zoom(value):
+    try:
+        zoom = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError('navigation zoom must be 0 or a number from 0.25 to 4') from None
+    if isinstance(value, bool) or not math.isfinite(zoom) or not (zoom == 0 or 0.25 <= zoom <= 4):
+        raise argparse.ArgumentTypeError('navigation zoom must be 0 or a number from 0.25 to 4')
+    return zoom
+
+
+def saved_link_zoom(pdf, link):
+    # Some MuPDF versions report get_links()['zoom'] as 0 even when /XYZ
+    # contains an explicit zoom. Inspect the saved PDF destination itself.
+    kind, destination = pdf.xref_get_key(link['xref'], 'A/D')
+    if kind != 'array' or '/XYZ' not in destination:
+        return float('nan')
+    value = destination.rstrip('] \t\r\n').split()[-1]
+    return 0.0 if value == 'null' else float(value)
 
 
 def paragraphs(value, *, field):
@@ -200,6 +221,7 @@ return Array.from(main.children).flatMap((page, index) => {
 
 
 async def build(args):
+    navigation_zoom = parse_navigation_zoom(getattr(args, 'navigation_zoom', 1.25))
     source_path, out_path = args.source.resolve(), args.output.resolve()
     if source_path == out_path:
         raise ValueError('Use a different output filename to preserve the source PDF.')
@@ -317,13 +339,13 @@ footerTop:footer.top-sheet.top,pageHeight:sheet.height};
             rect = card['answer_rect']
             forward_rect = [source_width + rect[0], rect[1], source_width + rect[2], rect[3]]
             forward = {'source_pdf_page': prompt_page + 1, 'target_pdf_page': answer_page + 1,
-                       'from': forward_rect, 'to': answer['to']}
+                       'from': forward_rect, 'to': answer['to'], 'zoom': navigation_zoom}
             backward = {'source_pdf_page': answer_page + 1, 'target_pdf_page': prompt_page + 1,
-                        'from': answer['return_rect'], 'to': prompt_to}
+                        'from': answer['return_rect'], 'to': prompt_to, 'zoom': navigation_zoom}
             for link in (forward, backward):
                 result[link['source_pdf_page'] - 1].insert_link({
                     'kind': fitz.LINK_GOTO, 'from': fitz.Rect(link['from']),
-                    'page': link['target_pdf_page'] - 1, 'to': fitz.Point(link['to'])})
+                    'page': link['target_pdf_page'] - 1, 'to': fitz.Point(link['to']), 'zoom': link['zoom']})
             sidebar_navigation.append({'id': answer['id'], 'forward': forward, 'return': backward})
         internal_links = []
         for i,old in enumerate(source):
@@ -362,6 +384,7 @@ footerTop:footer.top-sheet.top,pageHeight:sheet.height};
             and link.get('page') == expected['target_pdf_page'] - 1
             and max(abs(a-b) for a,b in zip(link['from'], expected['from'])) < 0.1
             and max(abs(a-b) for a,b in zip(link.get('to', (float('inf'),)*2), expected['to'])) < 0.1
+            and ('zoom' not in expected or math.isclose(saved_link_zoom(final, link), expected['zoom'], rel_tol=1e-6))
             for link in actual), f'Internal link missing or changed: {expected}'
     answer_text = ''.join(''.join(page.get_text().split()) for page in list(final)[answer_start:])
     for question in questions:
@@ -381,7 +404,7 @@ footerTop:footer.top-sheet.top,pageHeight:sheet.height};
         checks.append({'body_page':i+1,'pdf_page':i+1+overview_count,'source_text_identical':True,'source_pixels_identical':True})
     report={'output':str(out_path),'page_count':len(final),'overview_pages':overview_count,'sidebar_width_mm':width*25.4/72,
             'source_preservation':checks,'internal_links_preserved':internal_links,'layout':layout,
-            'answer_pages':answer_count,'sidebar_navigation':sidebar_navigation,
+            'answer_pages':answer_count,'sidebar_navigation':sidebar_navigation,'navigation_zoom':navigation_zoom,
             'legacy_untyped_cards':[card['id'] for page in data['pages'] for card in page['cards']
                                     if 'kind' not in card]}
     args.report.parent.mkdir(parents=True,exist_ok=True)
@@ -405,4 +428,6 @@ if __name__=='__main__':
     parser.add_argument('--overview',type=Path,required=True)
     parser.add_argument('--report',type=Path,required=True)
     parser.add_argument('--preview-dir',type=Path)
+    parser.add_argument('--navigation-zoom',type=parse_navigation_zoom,default=1.25,
+                        help='Question/answer destination zoom: 1.25 (125%%) by default; 0 keeps the current zoom; allowed range 0.25-4.')
     asyncio.run(build(parser.parse_args()))
