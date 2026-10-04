@@ -136,6 +136,8 @@ async def test_section_failure_reports_stage_and_preserves_completed_sections(tm
         async def generate(self, schema, system, user, images=None):
             if schema is LessonPlan:
                 return plan
+            if schema.__name__ == "SectionSourceReview":
+                return schema.model_validate({"additions": []})
             planned, _ = json.JSONDecoder().raw_decode(user.split("本节计划：", 1)[1])
             stage = "审校" if "待审校初稿JSON：" in user else "初稿"
             if planned["id"] == "s2" and stage == failed_stage:

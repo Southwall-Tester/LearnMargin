@@ -73,14 +73,17 @@ def review_draft(schema, user):
 
 class SequenceProvider:
     """Deterministic in-process model substitute; never creates an HTTP client."""
-    def __init__(self, values, *, revise=None):
+    def __init__(self, values, *, revise=None, source_support=None):
         self.values = list(values)
         self.calls = []
         self.reviews = []
         self.revise = revise
+        self.source_support = source_support or {"additions": []}
 
     async def generate(self, schema, system, user, images=None):
         self.calls.append((schema.__name__, user, images))
+        if schema.__name__ == "SectionSourceReview":
+            return schema.model_validate(self.source_support)
         draft = review_draft(schema, user)
         if draft is not None:
             self.reviews.append((draft.copy(), user, images))
@@ -123,7 +126,7 @@ async def test_selected_language_reaches_every_writing_stage_and_saved_lesson(wo
     lesson = await generate_lesson(parameters, [source], store, output, provider, lambda *_: None)
     assert parameters.language == language
     assert lesson.language == language
-    assert len(provider.calls) == 5  # plan + two drafts + two reviews; no translation call
+    assert len(provider.calls) == 6  # plan + source review + two drafts + two reviews; no translation call
     assert all(language in prompt for _, prompt, _ in provider.calls)
     assert lesson.text.pause_when == localized_plan["text"]["pause_when"]
     assert all(item.pause is None for item in lesson.sections)
@@ -164,7 +167,7 @@ async def test_optional_rest_guidance_and_load_survive_without_forced_stops_or_e
     expected_prompts = [item["study_prompts"] for item in sections]
     provider = SequenceProvider([planned, *sections])
     lesson = await generate_lesson(request(), [document()], store, output, provider, lambda *_: None)
-    assert len(provider.calls) == 5
+    assert len(provider.calls) == 6
     for index, completed in enumerate(lesson.sections, 1):
         if index in existing:
             assert completed.pause.model_dump() == pauses[index]
@@ -187,7 +190,7 @@ async def test_reviewed_load_is_persisted_and_drives_schedule_without_an_extra_m
 
     provider = SequenceProvider([plan(), section(1), section(2)], revise=revise)
     lesson = await generate_lesson(request(), [document()], store, output, provider, lambda *_: None)
-    assert len(provider.calls) == 5
+    assert len(provider.calls) == 6
     pauses = plan_pauses(lesson)
     assert [(item["section"], item["boundary"], item["estimated_minutes_since_break"])
             for item in pauses] == [(1, "example", 23), (2, "example", 23)]
@@ -211,7 +214,7 @@ async def test_both_writing_stages_map_every_content_block_to_its_actual_break_b
         assert "每项内容只计入上述一个字段，不遗漏、不重复累计" in prompt
         assert "when按所选输出语言明确" in prompt
     assert all("若距上次休息已专注约25分钟，休息5分钟；时间未到可继续" in prompt
-               for _, prompt, _ in provider.calls)
+               for schema, prompt, _ in provider.calls if schema != "SectionSourceReview")
 
 
 async def test_topic_selection_cannot_forge_source_locations(workspace):
@@ -598,11 +601,78 @@ async def test_same_document_prerequisite_reaches_plan_draft_and_review_as_refer
             assert sources[0].units[2].text not in prompt
     selection_prompt = next(prompt for schema, prompt, _ in provider.calls if schema == "TopicSelection")
     assert "不能仅因同主题就选择后续应用" in selection_prompt
+    assert "主范围已经提出的目标概念、结论的完整表述与必要解释" in selection_prompt
     evidence = json.loads((output / "scope-reasoning.json").read_text(encoding="utf-8"))
     assert evidence["include_prerequisites"] is True
     assert evidence["primary_refs"] == [expected[0]]
     assert evidence["batches"][0]["purpose"] == "prerequisite"
     assert evidence["batches"][0]["examined_refs"] == [f"{DOC_ID}:1", f"{DOC_ID}:3"]
+
+
+@pytest.mark.parametrize("vision", [False, True])
+async def test_source_review_shares_later_support_with_intro_without_dumping_other_material(workspace, vision):
+    store, output = workspace
+    source = source_document(DOC_ID, "自生成课件.pdf", [
+        "独立事件有什么特征？已知另一个事件发生，目标事件的概率不变。",
+        "当P(B)>0时，独立条件P(A∩B)=P(A)P(B)等价于P(A|B)=P(A)。这是前页结论的条件与完整表述。",
+        "下一主题是随机变量的二项分布，给出计数模型与分布计算，以及独立重复试验的解释。",
+    ])
+    if vision:
+        folder = store.directory("documents", DOC_ID)
+        folder.mkdir(parents=True)
+        for unit in source.units:
+            unit.image_paths = [f"page-{unit.index}.png"]
+            (folder / unit.image_paths[0]).write_bytes(b"in-process image fixture")
+    initial = plan()
+    initial["sections"][1]["source_refs"].append(f"{DOC_ID}:3")
+    drafts = [section(1), section(2)]
+    drafts[0]["source_refs"].append(f"{DOC_ID}:2")
+    drafts[1]["source_refs"].append(f"{DOC_ID}:3")
+    support = {"additions": [{"section_id": "s1", "source_refs": [f"{DOC_ID}:2"],
+                              "reason": "导入节需要后页的完整条件与结论，不能只有提问和一句回答。"}]}
+    provider = SequenceProvider([initial, *drafts], source_support=support)
+    parameters = request()
+    parameters.api.vision = vision
+    lesson = await generate_lesson(parameters, [source], store, output, provider, lambda *_: None)
+
+    review_calls = [call for call in provider.calls if call[0] == "SectionSourceReview"]
+    assert len(review_calls) == 1
+    assert all(unit.text in review_calls[0][1] for unit in source.units)
+    assert len(review_calls[0][2]) == (3 if vision else 0)
+    first_section_calls = [call for call in provider.calls if call[0] == "GeneratedLessonSection"
+        and json.JSONDecoder().raw_decode(call[1].split("本节计划：", 1)[1])[0]["id"] == "s1"]
+    assert len(first_section_calls) == 2
+    for _, prompt, pictures in first_section_calls:
+        assert source.units[0].text in prompt
+        assert source.units[1].text in prompt
+        assert source.units[2].text not in prompt
+        assert pictures == ([folder / "page-1.png", folder / "page-2.png"] if vision else [])
+    assert lesson.sections[0].source_refs == [f"{DOC_ID}:1", f"{DOC_ID}:2"]
+    saved = json.loads((output / "plan.json").read_text(encoding="utf-8"))
+    assert saved["sections"][0] == {**initial["sections"][0], "source_refs": lesson.sections[0].source_refs}
+    assert saved["sections"][1] == initial["sections"][1]
+    audit = json.loads((output / "section-source-review.json").read_text(encoding="utf-8"))
+    assert audit["status"] == "completed"
+    assert audit["original_refs"]["s1"] == [f"{DOC_ID}:1"]
+    assert audit["revised_refs"]["s1"] == lesson.sections[0].source_refs
+    assert audit["additions"] == support["additions"]
+
+
+@pytest.mark.parametrize("additions", [
+    [{"section_id": "invented", "source_refs": [f"{DOC_ID}:2"], "reason": "未知章节"}],
+    [{"section_id": "s1", "source_refs": [f"{DOC_ID}:99"], "reason": "未选择的页"}],
+    [{"section_id": "s1", "source_refs": [f"{DOC_ID}:2"], "reason": "重复项"}] * 2,
+])
+async def test_invalid_source_review_stops_before_writing_and_saves_diagnosis(workspace, additions):
+    store, output = workspace
+    provider = SequenceProvider([plan()], source_support={"additions": additions})
+    with pytest.raises(ValueError, match="章节依据检查"):
+        await generate_lesson(request(), [document()], store, output, provider, lambda *_: None)
+    assert [call[0] for call in provider.calls] == ["LessonPlan", "SectionSourceReview"]
+    assert not (output / "plan.json").exists()
+    audit = json.loads((output / "section-source-review.json").read_text(encoding="utf-8"))
+    assert audit["status"] == "failed"
+    assert audit["additions"] == additions
 
 
 async def test_strict_page_scope_never_reads_same_document_outside_range(workspace):
@@ -613,6 +683,7 @@ async def test_strict_page_scope_never_reads_same_document_outside_range(workspa
     lesson = await generate_lesson(request(scope=Scope(mode="pages", ranges={DOC_ID: "2"},
         include_prerequisites=False)), [main], store, output, provider, lambda *_: None)
     assert len(provider.calls) == 5
+    assert not any(name == "SectionSourceReview" for name, _, _ in provider.calls)
     assert all(main.units[0].text not in prompt for _, prompt, _ in provider.calls)
     assert [item.ref for item in lesson.sources] == selected
 
@@ -688,7 +759,7 @@ async def test_review_can_resolve_draft_prerequisite_gap_without_extra_model_req
 
     provider = SequenceProvider([plan(), *drafts], revise=revise)
     lesson = await generate_lesson(request(), [document()], store, output, provider, lambda *_: None)
-    assert len(provider.calls) == 5
+    assert len(provider.calls) == 6
     assert all(item.unresolved_prerequisites == [] for item in lesson.sections)
     assert json.loads((output / "section-1.json").read_text(encoding="utf-8"))["unresolved_prerequisites"] == []
 

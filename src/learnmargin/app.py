@@ -94,7 +94,8 @@ class Jobs:
                             "api_usage": usage, "layout": request.layout if request else "a4"})
                 with ZipFile(output / "sources.zip", "w", ZIP_DEFLATED) as archive:
                     for name in ("lesson.html", "lesson.json", "validation.json", "plan.json", "selection.json",
-                                 "scope-reasoning.json", "transcription.json", "generation.json"):
+                                 "scope-reasoning.json", "section-source-review.json", "transcription.json",
+                                 "generation.json"):
                         if (output / name).is_file():
                             archive.write(output / name, name)
                 base = f"/api/jobs/{job['id']}/artifacts/"
