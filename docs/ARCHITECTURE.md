@@ -8,7 +8,8 @@ flowchart LR
   Store --> Scope[Primary ranges + reference retrieval or cross-document topics]
   Skill[Shared skill references] --> Plan[Structured lesson plan]
   Scope --> Plan
-  Plan --> Sections[Source-bound section generation]
+  Plan --> Support[Cross-section source allocation review]
+  Support --> Sections[Source-bound section generation]
   Sections --> Render[Offline HTML + KaTeX + measured pagination]
   Render --> PDF[PDF / editable HTML / JSON]
 ```
@@ -24,9 +25,9 @@ The server serves a single local workspace, restricts host and origin, and does 
 ## Generation
 
 1. Preserve original source units. For scan-like pages, or every image unit in explicit handwriting mode, request multimodal transcription with LaTeX and uncertainty markers. Save a separate transcription record; never overwrite the original image/text. Keep explicit ranges as primary units and extract a bounded search focus; inspect other documents in full-unit batches for related references. Topic mode searches each selected file directly. Record examined and selected refs with reasons.
-2. Create a plan with a substantive overview and source references; validate selected-unit coverage, section count and reference existence.
+2. Create a plan with a substantive overview and source references; validate selected-unit coverage, section count and reference existence. Unless every section already has all selected units, run one focused source-allocation review over the plan and selected material. It may append only selected references to existing sections, keeping their targets and original references. This lets an introduction use a later formal statement without passing every source to every writer. Save original references, additions with reasons, and revised references in `section-source-review.json`; reject unknown or repeated section IDs and references outside the selection.
 3. Select relevant chapters from the shared learning-method library.
-4. Generate sections with bounded concurrency and pass the topic constraint to every stage. A second source-backed model pass reviews each draft's conditions, attribution, repetition and answer-bearing prompts; this is a correction step, not a proof of semantic accuracy.
+4. Generate sections with bounded concurrency and pass the topic constraint to every stage. Writers receive their revised source allocation, including text and available images. Explain the selected concepts and conclusions beyond slide wording, using sufficient conditions, reasoning and examples; attribute supplements accurately and choose proof depth according to the learning target. A second source-backed model pass reviews each draft's conditions, attribution, repetition and answer-bearing prompts; this is a correction step, not a proof of semantic accuracy.
 5. Validate IDs, references, per-file source explanations and answer-bearing prompt requirements. Primary pages remain in scope; reference material cannot replace them or silently expand the curriculum.
 6. Render, verify content retention, math, dimensions and internal destinations; publish downloads only after completion.
 

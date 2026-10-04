@@ -1,13 +1,16 @@
 import asyncio
 import json
 import time
+from io import BytesIO
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 from fastapi.testclient import TestClient
 
 from learnmargin import rendering
 from learnmargin.app import create_app
+from learnmargin.demo import demo_lesson
 from learnmargin.models import GenerateRequest
 from learnmargin.storage import Store, atomic_json, new_id, now
 
@@ -154,6 +157,34 @@ def test_demo_uses_actual_job_state_without_provider(client, monkeypatch):
     assert client.get(result["artifacts"]["pdf"]).status_code == 200
     assert client.get(result["artifacts"]["source_zip"]).headers["content-type"] == "application/zip"
     assert client.get(f"/api/jobs/{result['id']}/artifacts/job.json").status_code == 404
+
+
+def test_source_archive_includes_section_evidence_review_without_new_download_endpoint(client, monkeypatch):
+    review = {"status": "completed", "original_refs": {"s1": ["source:1"]},
+              "additions": [{"section_id": "s1", "source_refs": ["source:2"],
+                             "reason": "后页补足目标结论的条件。"}],
+              "revised_refs": {"s1": ["source:1", "source:2"]}}
+
+    async def generated(_request, _documents, _store, output, _provider, _progress):
+        atomic_json(output / "section-source-review.json", review)
+        return demo_lesson()
+
+    monkeypatch.setattr("learnmargin.app.generate_lesson", generated)
+    monkeypatch.setattr(rendering, "render_lesson", fake_render)
+    document = upload(client)
+    payload = GenerateRequest(document_ids=[document["id"]]).model_dump(mode="json")
+    payload["api"]["api_key"] = "in-memory-archive-test-key"
+    submitted = client.post("/api/jobs", json=payload)
+    assert submitted.status_code == 202
+    result = wait_job(client, submitted.json()["id"])
+    assert result["status"] == "completed", result
+    response = client.get(result["artifacts"]["source_zip"])
+    assert response.status_code == 200
+    with ZipFile(BytesIO(response.content)) as archive:
+        assert archive.testzip() is None
+        assert json.loads(archive.read("section-source-review.json")) == review
+        assert "job.json" not in archive.namelist()
+    assert client.get(f"/api/jobs/{result['id']}/artifacts/section-source-review.json").status_code == 404
 
 
 def test_secret_not_persisted_and_cancel_blocks_document_deletion(client, monkeypatch):

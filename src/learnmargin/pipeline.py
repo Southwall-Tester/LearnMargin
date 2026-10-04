@@ -40,6 +40,16 @@ class StudyFocus(Model):
     summary: str = Field(max_length=1000)
 
 
+class SectionSourceSupport(Model):
+    section_id: str = Field(min_length=1)
+    source_refs: list[str] = Field(min_length=1, max_length=MAX_SELECTED_UNITS)
+    reason: str = Field(min_length=1, max_length=240)
+
+
+class SectionSourceReview(Model):
+    additions: list[SectionSourceSupport] = Field(max_length=8)
+
+
 def parse_range(value: str, total: int) -> list[int]:
     normalized = value.replace("，", ",").replace("；", ",").replace("~", "-").replace("～", "-").replace("–", "-")
     if not normalized.strip():
@@ -101,6 +111,9 @@ BASE_SYSTEM = """你是 LearnMargin 的课程讲义作者。依据所给学习�
 不得伪造来源中的定义、引文、页码或学习者表现。可给出与材料一致、适用条件明确的助教补充解释，
 但须标明是补充解释，不能声称原文写过；自创例题明确标为补充例题。具体缺失的定义或结论无法确认时，
 须如实列入unresolved_prerequisites，不得用无根据的事实补足。
+材料决定学习主线，不是讲解深度的上限。标题、结论或课件中的省略必须转化为可理解的讲解：
+对目标概念和结论说明含义、必要条件、为什么成立或关键推理，并给出有帮助的例子或边界。
+按本节目标决定证明深度；完整证明另节展开时，本节仍应交付准确结论与理解它所需的解释，不能只复述材料说了什么。
 公式使用 LaTeX：行内 $...$，独立公式 $$...$$；JSON 中正确转义反斜杠。输出纯 JSON。
 Markdown 表格内公式的竖线使用 LaTeX 命令（如条件概率用 mid 命令），不能让裸竖线被解析成分列符。
 只用实际提供的 source_refs，学科推理要保留前提与中间过程，不用方法口号替代解释。
@@ -156,7 +169,9 @@ async def retrieve_related(candidates, query: str, store: Store, provider: Provi
         prerequisite_only = document.id in prerequisite_document_ids
         selection_constraint = (
             "本批是主材料同一文件的范围外内容，只选择当前学习范围实际依赖、但尚未说明的定义、"
-            "符号含义或前置结论；不能仅因同主题就选择后续应用、新定理或整章内容。\n"
+            "符号含义、前置结论，或主范围已经提出的目标概念、结论的完整表述与必要解释；"
+            "这些内容位于后页也可选入，不因出现正式定理就误判为新主题。"
+            "不能仅因同主题就选择后续应用、无关新定理或整章内容。\n"
             if prerequisite_only else
             "本批可选择同一知识点的解释、必要前提、互补例子与不同表述。\n"
         )
@@ -233,6 +248,7 @@ async def generate_lesson(request: GenerateRequest, documents: list[Document], s
             focus = await provider.generate(StudyFocus, BASE_SYSTEM,
                 "从以下主材料提取1～8个核心知识点topics，并用简短summary说明学习范围与必要前提。"
                 "特别列明使用了但未定义的术语、符号、问题、对象，以及论证所依赖而未说明的结论；"
+                "主范围只给出标题、名称或简短结论时，也列明目标结论尚缺的完整含义、条件与必要解释。"
                 "保留原文记号供检索，不能凭缩写猜全称。"
                 "只为在获准资料中检索同一知识点及必要前置定义，不能扩大主材料范围；不要撰写讲义。\n" + primary_content,
                 primary_images)
@@ -301,7 +317,11 @@ async def generate_lesson(request: GenerateRequest, documents: list[Document], s
         "必要基础、逐段目标。不能只有目录或让读者自己总结未知材料。每个章节指定实际材料引用。"
         "将补足前置定义和所依赖结论的参考页分配给真正使用它的章节；"
         "不能只在前一节列名，后节却未经解释就使用。"
-        "所有给出的材料位置都应至少被一个章节引用，避免漏讲。各章目标要分工明确，不重复展开同一内容。"
+        "所有给出的材料位置都应至少被一个章节引用，避免漏讲。"
+        "source_refs可以跨章节共享：讲目标结论含义的导入节，也应引用后页的完整表述、条件与必要解释。"
+        "不要把只有标题、提问或一句结论的幻灯片孤立成仅复述原句的章节；"
+        "可结合实质内容组织章节，或为导入节分配足够的支持材料。"
+        "各章按理解目标分工，避免重复完整演算或证明，不用章节分工限制必要解释。"
         "多资料要按知识点整合，不按文件分别复述；总览说明各份资料的作用，正文结合其他资料如何解释。"
         "页码模式每节必须含至少一个主材料位置，可同时引用相关参考资料。"
         "总览摘要用一小段，概念含义和联系各用1～2句；学习顺序只写必要步骤。章节id依次为s1、s2等。"
@@ -327,6 +347,43 @@ async def generate_lesson(request: GenerateRequest, documents: list[Document], s
         plan = await provider.generate(LessonPlan, BASE_SYSTEM,
             prompt + f"\n校验发现遗漏位置{sorted(missing)}，无效位置{sorted(invalid)}。"
             f"请重做计划，恰好{request.section_count}个章节，章节id唯一，方法章节编号1～18。", images)
+    # Check evidence across the complete selected material before isolating each
+    # writer's context. Later statements can support an earlier introduction;
+    # passing only the original refs would make that information inaccessible.
+    original_refs = {section.id: section.source_refs.copy() for section in plan.sections}
+    support = SectionSourceReview(additions=[])
+    if any(set(refs) != set(chosen) for refs in original_refs.values()):
+        progress("检查章节讲解依据", 28)
+        support = await provider.generate(SectionSourceReview, BASE_SYSTEM,
+            f"输出语言：{request.language}。学习者补充：{request.learner_notes or '未提供'}。\n"
+            f"学习范围约束：{topic_constraint}\n材料角色和位置：{source_roles}\n"
+            "检查每节的source_refs是否足以完成其目标，不重写计划、不生成讲义。"
+            "从全部已选材料中，只为需要补充依据的章节返回additions；没有遗漏时additions为空数组。"
+            "每项写section_id、尚未分配给该节的source_refs和一句reason，同一章节最多一项。"
+            "特别检查只有标题、问题或简短结论的导入节：找到该目标概念或结论的完整表述、"
+            "适用条件、含义及关键推理所需材料，即使它在后页、其他章节或另一文件。"
+            "同一来源可供多节使用，补到需要理解它的章节，不要求照抄后续的完整证明。"
+            "只补该节理解目标必需的来源，不把所有材料分给每节，不引入无关新主题、"
+            "后续应用或未经选择的位置，也不以增加练习或学习任务为理由扩大范围。"
+            "只缺解释性串联而无需更多来源时无需追加；正文作者应完成必要的补充解释。\n"
+            f"当前章节计划：{json.dumps([s.model_dump() for s in plan.sections], ensure_ascii=False)}\n"
+            f"全部已选材料数据：{material}", images)
+    section_ids = [addition.section_id for addition in support.additions]
+    invalid_support = (len(section_ids) != len(set(section_ids))
+                       or any(addition.section_id not in original_refs
+                              or set(addition.source_refs) - set(chosen) for addition in support.additions))
+    if invalid_support:
+        atomic_json(output / "section-source-review.json", {
+            "status": "failed", "original_refs": original_refs, **support.model_dump(),
+        })
+        raise ValueError("章节依据检查返回了无效章节、重复章节或未选中的材料位置，请重新生成。")
+    additions_by_id = {addition.section_id: addition.source_refs for addition in support.additions}
+    for section in plan.sections:
+        section.source_refs = list(dict.fromkeys([*section.source_refs, *additions_by_id.get(section.id, [])]))
+    atomic_json(output / "section-source-review.json", {
+        "status": "completed", "original_refs": original_refs, **support.model_dump(),
+        "revised_refs": {section.id: section.source_refs for section in plan.sections},
+    })
     atomic_json(output / "plan.json", plan.model_dump())
     if request.scope.mode == "pages":
         scope_note = (f"{plan.text.scope_primary}: {len(primary_refs)} · "
@@ -373,7 +430,12 @@ async def generate_lesson(request: GenerateRequest, documents: list[Document], s
                 f"材料角色和位置：{source_roles}\n"
                 f"讲义题目：{plan.title}；本节计划：{planned.model_dump_json()}。\n"
                 f"全篇章节分工：{json.dumps([s.model_dump() for s in plan.sections], ensure_ascii=False)}。\n"
-                "严格围绕本节目标，不重复展开其他章节的内容。写清必要定义、条件、直觉和推导；"
+                "围绕本节理解目标组织讲解，避免重复其他章节的完整演算或证明。"
+                "课件只给标题或结论，也必须讲清目标结论本身的含义、适用条件、关键推理及边界，"
+                "不能把课件省略当作只讲定性口号的理由；用提供的支持材料和条件明确的补充解释补齐。"
+                "完整证明放在后节时，先解释准确结论、为什么可信及证明路线，再指向具体章节；"
+                "不要用‘本节不展开’替代当前理解所必需的内容，也不必给每个结论强加完整证明。"
+                "写清必要定义、条件、直觉和推导；"
                 "对本节要使用的术语、符号和所依赖结论，先依据提供的参考页补足完整含义及作用，"
                 "然后再开始使用；定义应说明对象、输入输出或成立条件，并解释与当前目标的联系。"
                 "这属于讲解任务，不能把关键缺口写成读者以后另行补充或自行核对。"
@@ -417,6 +479,9 @@ async def generate_lesson(request: GenerateRequest, documents: list[Document], s
                 f"你现在审校一节讲义，语言为{request.language}。对照本节真实材料检查并返回修订后的完整JSON。"
                 "保持id、source_refs、学习范围及必要讲解。核查定义、计算、适用条件、量词和边界，不把特殊"
                 "情形的直觉当作一般定理；资料未支持的说法要删去或改为条件明确的补充解释。"
+                "检查本节是否真正解释目标内容，而非罗列材料的标题、原句与‘不展开’声明。"
+                "对只重复定性结论的段落，利用本节支持材料补足精确含义、条件、关键推理与边界；"
+                "不要因原课件省略或后节有完整证明而删除这些必要解释。"
                 "逐项检查首次使用的术语、符号与所依赖结论是否已解释；从本节参考材料补齐遗漏的"
                 "定义、直观角色和条件后再使用。删除把关键知识缺口推给读者以后补充、查阅或核对的占位话，"
                 "但不能用猜测缩写全称或编造定义来掩盖缺口。"
