@@ -84,7 +84,10 @@ class LessonPlan(Model):
 
 class StudyPrompt(Model):
     id: str
-    kind: Literal["question", "action"] = Field(description="需要作答、解释或计算用question并提供answer；纯操作提示用action。")
+    kind: Literal["question", "action"] = Field(
+        description="要求写出、解释、判断、计算或重建知识答案用question并提供answer；"
+        "只有计时、休息、翻页等无需知识作答的操作用action，不按动笔或遮住等开头词分类。"
+    )
     when: str
     task: str
     check: str

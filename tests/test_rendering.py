@@ -164,7 +164,7 @@ async def test_sidebar_only_answers_have_forward_and_return_navigation(tmp_path:
 async def test_operation_prompt_does_not_create_an_answer_section(tmp_path: Path):
     lesson = example_lesson(practice=False)
     lesson.sections[0].study_prompts[0] = StudyPrompt(
-        id="S1", kind="action", when="读完例题后", task="遮住解答重做例题。", check="做完后逐步对照正文。", answer=None
+        id="S1", kind="action", when="读完例题后", task="记录当前页码，安排明天复习。", check="明天从记录的页码继续。", answer=None
     )
     result = await render_lesson(lesson, tmp_path)
     assert result["answer_section_page"] == 0

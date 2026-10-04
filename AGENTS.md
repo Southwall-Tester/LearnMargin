@@ -5,6 +5,8 @@ This repository contains two independent products: the API-powered local applica
 - Preserve user-selected scope, provider, model and layout.
 - Default layout: A4 portrait with the sidebar inside A4. Keep the wider option available.
 - Give a substantive overview before detailed teaching. Prompts should be concise, useful and optional rather than filling margins with questions.
+- Expand unfamiliar subject abbreviations on first use with their full name and Chinese meaning, using the source's terminology. Do not invent expansions from letters alone.
+- Keep application copy functional: control labels, necessary input guidance, actual state and errors. No slogans, decorative English captions, introductory feature summaries or repeated footer branding. Remove their layout space as well; check the actual desktop and mobile interface before delivery.
 - Answer-bearing sidebar prompts use `kind=question` and need a separated reference answer with a return link. Pure actions use `kind=action`.
 - Never represent Word sections as rendered pages. Never silently truncate selected source material.
 - Topic selection searches every selected document. Page selection keeps explicit ranges as primary material and retrieves related content from the remaining documents; explain each source and preserve its location in the lesson.

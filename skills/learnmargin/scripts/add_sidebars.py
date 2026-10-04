@@ -22,6 +22,41 @@ def e(value):
     return html.escape(str(value), quote=True)
 
 
+def paragraphs(value, *, field):
+    if value is None:
+        return []
+    values = [value] if isinstance(value, str) else value
+    if not isinstance(values, list) or any(not isinstance(text, str) for text in values):
+        raise ValueError(f'{field} must be text or a list of text paragraphs')
+    return [text.strip() for text in values if text.strip()]
+
+
+def validate_cards(data):
+    """Validate declared intent; do not guess intent from task vocabulary."""
+    ids = set()
+    questions = []
+    for page in data['pages']:
+        for card in page['cards']:
+            card_id = card['id']
+            if not isinstance(card_id, str) or not card_id.strip() or card_id in ids:
+                raise ValueError(f'Card id must be nonempty and unique: {card_id!r}')
+            ids.add(card_id)
+            if 'requires_answer' in card:
+                raise ValueError(f'{card_id}: replace requires_answer with kind=question/action and answer')
+            kind = card.get('kind', 'action')  # Existing operation-only notes stay valid.
+            if kind not in ('question', 'action'):
+                raise ValueError(f'{card_id}: kind must be question or action')
+            answer = paragraphs(card.get('answer'), field=f'{card_id}.answer')
+            if kind == 'question' and not answer:
+                raise ValueError(f'{card_id}: question requires a nonempty answer')
+            if kind == 'action' and answer:
+                raise ValueError(f'{card_id}: a card with an answer must use kind=question')
+            if kind == 'question':
+                questions.append({**card, 'answer': answer,
+                                  'check': paragraphs(card.get('check'), field=f'{card_id}.check')})
+    return questions
+
+
 def make_html(source, data, width):
     sections = []
     sizes = []
@@ -45,7 +80,11 @@ def make_html(source, data, width):
             anchor_report.append({'page': n, 'id': card['id'], 'anchor_y': y})
             body = ''.join(f'<p>{e(p)}</p>' for p in card['body'])
             lines = ''.join('<div class="write-line"></div>' for _ in range(card.get('response_lines', 0)))
-            cards.append(f'<article class="card" data-anchor="{y}" data-id="{e(card["id"])}"><div class="label"><b>{e(card["id"])}</b> {e(card["label"])}</div><h2>{e(card["title"])}</h2>{body}{lines}</article>')
+            if card.get('kind') == 'question':
+                feedback = '<p><span class="answer-link">查看参考答案 →</span></p>'
+            else:
+                feedback = ''.join(f'<p>{e(p)}</p>' for p in paragraphs(card.get('check'), field='check'))
+            cards.append(f'<article class="card" data-anchor="{y}" data-id="{e(card["id"])}"><div class="label"><b>{e(card["id"])}</b> {e(card["label"])}</div><h2>{e(card["title"])}</h2>{body}{lines}{feedback}</article>')
         pause = item.get('pause')
         if pause:
             minutes = pause['minutes']
@@ -81,6 +120,7 @@ p {margin:6pt 0 0}
 .label {font-size:7.8pt;color:#5c7c8a;line-height:1.45}
 .label b {display:inline-block;background:#e5f2f4;color:#176477;padding:1pt 4pt;border-radius:2pt;margin-right:3pt;font-weight:600}
 h2 {font-size:10.6pt;line-height:1.5;color:#174b62;margin:6pt 0 7pt}
+.answer-link {display:inline-block;color:#145b70;border:0.6pt solid #bdd6df;border-radius:3pt;padding:3pt 5pt;font-weight:600}
 .write-line {height:17pt;border-bottom:.6pt solid #dce6eb}
 footer {position:absolute;left:15pt;right:15pt;bottom:49pt;border-top:.7pt solid #bfd7df;padding-top:9pt;font-size:8.2pt;line-height:1.65;color:#597383}
 .foot-label {font-size:8pt;color:#27657a;font-weight:600;margin-bottom:4pt}
@@ -92,6 +132,73 @@ footer.pause p {margin:5pt 0 0}
     return '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><style>'+css+''.join(sizes)+f'.strip {{width:{width}pt}}'+'</style><body>'+''.join(sections)+'</body></html>', anchor_report
 
 
+async def render_answers(tab, questions, width, height, work):
+    """Pack short answer cards into measured pages, with exact return targets."""
+    if not questions:
+        return []
+    cards = []
+    for card in questions:
+        body = ''.join(f'<p>{e(text)}</p>' for text in card['answer'])
+        check = ''.join(f'<p>{e(text)}</p>' for text in card['check'])
+        cards.append(f'<article class="answer-card" data-id="{e(card["id"])}">'
+                     f'<h2>{e(card["id"])} · {e(card["title"])}</h2>{body}'
+                     f'<div class="check">{check}</div>'
+                     '<p><span class="return-link">← 返回这条提示</span></p></article>')
+    answer_html = '''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><style>
+* {box-sizing:border-box} html,body {margin:0;padding:0}
+body {font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;color:#294457;font-size:10.5pt;line-height:1.7}
+.answer-page {padding:42pt 45pt;break-after:page;overflow:hidden;display:flex;flex-direction:column}
+.answer-page:last-child {break-after:auto}
+h1 {font-size:17pt;color:#174b62;margin:0 0 20pt;flex-shrink:0}
+.answer-content {flex:1;min-height:0;display:flow-root}
+.answer-card {padding:0 0 15pt;margin:0 0 17pt;border-bottom:.6pt solid #d1e1e8;overflow-wrap:anywhere}
+h2 {font-size:12pt;line-height:1.5;margin:0 0 8pt;color:#174b62}
+p {margin:7pt 0 0;white-space:pre-wrap}
+.check {color:#597383;font-size:9.5pt}
+.return-link {display:inline-block;color:#145b70;border:.6pt solid #bdd6df;border-radius:3pt;padding:3pt 7pt;font-size:9.5pt}
+''' + f'@page {{size:{width}pt {height}pt;margin:0}} .answer-page {{width:{width}pt;height:{height}pt}}' + \
+        '</style><body><main></main><div id="pool">' + ''.join(cards) + '</div></body></html>'
+    answer_path = work / 'answers.html'
+    answer_path.write_text(answer_html, encoding='utf-8')
+    await tab.goto(answer_path.as_uri())
+    await tab.evaluate('document.fonts.ready')
+    positions = await tab.evaluate('''() => {
+const pt = 96 / 72;
+const main = document.querySelector('main');
+const cards = Array.from(document.querySelectorAll('.answer-card'));
+let content;
+function newPage() {
+  const page = document.createElement('section'); page.className = 'answer-page';
+  page.innerHTML = '<h1>参考答案</h1><div class="answer-content"></div>';
+  main.append(page); content = page.querySelector('.answer-content');
+}
+newPage();
+for (const card of cards) {
+  content.append(card);
+  if (content.scrollHeight > content.clientHeight + 1) {
+    card.remove();
+    if (!content.children.length) throw new Error('Answer ' + card.dataset.id + ' is too long for one page; shorten it or use a flowing layout.');
+    newPage(); content.append(card);
+    if (content.scrollHeight > content.clientHeight + 1) throw new Error('Answer ' + card.dataset.id + ' is too long for one page; shorten it or use a flowing layout.');
+  }
+}
+document.querySelector('#pool').remove();
+return Array.from(main.children).flatMap((page, index) => {
+  const origin = page.getBoundingClientRect();
+  return Array.from(page.querySelectorAll('.answer-card')).map(card => {
+    const rect = card.getBoundingClientRect();
+    const link = card.querySelector('.return-link').getBoundingClientRect();
+    return {id:card.dataset.id, page:index + 1,
+      to:[(rect.left-origin.left)/pt, (rect.top-origin.top)/pt],
+      return_rect:[(link.left-origin.left)/pt, (link.top-origin.top)/pt,
+                   (link.right-origin.left)/pt, (link.bottom-origin.top)/pt]};
+  });
+});
+}''')
+    await tab.pdf(path=str(work / 'answers.pdf'), print_background=True, prefer_css_page_size=True)
+    return positions
+
+
 async def build(args):
     source_path, out_path = args.source.resolve(), args.output.resolve()
     if source_path == out_path:
@@ -99,6 +206,7 @@ async def build(args):
     if not args.overview.is_file():
         raise FileNotFoundError('An authored opening overview HTML is required.')
     data = json.loads(args.notes.read_text(encoding='utf-8'))
+    questions = validate_cards(data)
     source = fitz.open(source_path)
     if [p['page'] for p in data['pages']] != list(range(1, len(source)+1)):
         raise ValueError('Notes must match every source page, once, in page order.')
@@ -141,8 +249,14 @@ return Array.from(document.querySelectorAll('.strip')).map(section => {
   if (tops[0] < minimum-0.5) throw new Error('Overlapping goal on page '+section.dataset.page);
   cards.forEach((c,i)=>c.style.top=(tops[i]/pt)+'pt');
   return {page:Number(section.dataset.page),goalBottom:(minimum-15*pt)/pt,
-    footerTop:(maximum+15*pt)/pt,cards:cards.map((c,i)=>({id:c.dataset.id,
-    top:tops[i]/pt,height:heights[i]/pt,anchor:Number(c.dataset.anchor)}))};
+    footerTop:(maximum+15*pt)/pt,cards:cards.map((c,i)=>{
+      const box = c.getBoundingClientRect();
+      const link = c.querySelector('.answer-link')?.getBoundingClientRect();
+      return {id:c.dataset.id, left:(box.left-rect.left)/pt,
+        top:tops[i]/pt,height:heights[i]/pt,anchor:Number(c.dataset.anchor),
+        answer_rect:link ? [(link.left-rect.left)/pt,(link.top-rect.top)/pt,
+                           (link.right-rect.left)/pt,(link.bottom-rect.top)/pt] : null};
+    })};
 });
 }''')
             await tab.pdf(path=str(work/'sidebars.pdf'),print_background=True,prefer_css_page_size=True)
@@ -160,6 +274,8 @@ footerTop:footer.top-sheet.top,pageHeight:sheet.height};
                 assert overview_bounds['mainBottom'] < overview_bounds['pageHeight']-45, 'Overview main content overflows'
                 assert overview_bounds['lastCardBottom'] < overview_bounds['footerTop']-8, 'Overview sidebar overlaps footer'
                 await tab.pdf(path=str(work/'overview.pdf'),print_background=True,prefer_css_page_size=True)
+            answer_positions = await render_answers(tab, questions, source[0].rect.width + width,
+                                                    source[0].rect.height, work)
             await browser.close()
         sidebars = fitz.open(stream=(work/'sidebars.pdf').read_bytes(),filetype='pdf')
         if len(sidebars) != len(source):
@@ -183,6 +299,32 @@ footerTop:footer.top-sheet.top,pageHeight:sheet.height};
                 elif link['kind'] == fitz.LINK_GOTO:
                     # Resolve internal links after all pages exist, below.
                     pass
+        answer_start = len(result)
+        answer_count = 0
+        if questions:
+            with fitz.open(work / 'answers.pdf') as answers:
+                result.insert_pdf(answers)
+                answer_count = len(answers)
+        sidebar_navigation = []
+        prompt_positions = {card['id']: (item['page'], card)
+                            for item in layout for card in item['cards']}
+        for answer in answer_positions:
+            body_page, card = prompt_positions[answer['id']]
+            prompt_page = body_page - 1 + overview_count
+            answer_page = answer_start + answer['page'] - 1
+            source_width = source[body_page - 1].rect.width
+            prompt_to = [source_width + card['left'], card['top']]
+            rect = card['answer_rect']
+            forward_rect = [source_width + rect[0], rect[1], source_width + rect[2], rect[3]]
+            forward = {'source_pdf_page': prompt_page + 1, 'target_pdf_page': answer_page + 1,
+                       'from': forward_rect, 'to': answer['to']}
+            backward = {'source_pdf_page': answer_page + 1, 'target_pdf_page': prompt_page + 1,
+                        'from': answer['return_rect'], 'to': prompt_to}
+            for link in (forward, backward):
+                result[link['source_pdf_page'] - 1].insert_link({
+                    'kind': fitz.LINK_GOTO, 'from': fitz.Rect(link['from']),
+                    'page': link['target_pdf_page'] - 1, 'to': fitz.Point(link['to'])})
+            sidebar_navigation.append({'id': answer['id'], 'forward': forward, 'return': backward})
         internal_links = []
         for i,old in enumerate(source):
             for link in old.get_links():
@@ -207,19 +349,24 @@ footerTop:footer.top-sheet.top,pageHeight:sheet.height};
         result.set_metadata({'title':data['title'],'author':'学习讲义',
             'subject':data['method_source'],'keywords':'学习讲义,内容总览,回想,组块,间隔练习'})
         result.set_toc(([[1,'00 学习总览：整体关系与学习路线',1]] if overview_count else [])+
-            [[1,f"{item['page']:02d} {item['title']}",item['page']+overview_count] for item in data['pages']])
+            [[1,f"{item['page']:02d} {item['title']}",item['page']+overview_count] for item in data['pages']] +
+            ([[1, '参考答案', answer_start + 1]] if answer_count else []))
         out_path.parent.mkdir(parents=True,exist_ok=True)
         result.save(out_path,garbage=4,deflate=True)
         result.close()
         sidebars.close()
     final = fitz.open(out_path)
-    for expected in internal_links:
+    for expected in internal_links + [link for pair in sidebar_navigation for link in (pair['forward'], pair['return'])]:
         actual = final[expected['source_pdf_page'] - 1].get_links()
         assert any(link['kind'] == fitz.LINK_GOTO
             and link.get('page') == expected['target_pdf_page'] - 1
             and max(abs(a-b) for a,b in zip(link['from'], expected['from'])) < 0.1
             and max(abs(a-b) for a,b in zip(link.get('to', (float('inf'),)*2), expected['to'])) < 0.1
-            for link in actual), f'Internal link changed: {expected}'
+            for link in actual), f'Internal link missing or changed: {expected}'
+    answer_text = ''.join(''.join(page.get_text().split()) for page in list(final)[answer_start:])
+    for question in questions:
+        for paragraph in question['answer'] + question['check']:
+            assert ''.join(paragraph.split()) in answer_text, f'Answer text missing: {question["id"]}'
     checks=[]
     for i,old in enumerate(source):
         # Preserve every source character and exact visible pixels in the left panel.
@@ -233,7 +380,10 @@ footerTop:footer.top-sheet.top,pageHeight:sheet.height};
             assert card['id'] in final[i+overview_count].get_text(), f'Missing card {card["id"]}'
         checks.append({'body_page':i+1,'pdf_page':i+1+overview_count,'source_text_identical':True,'source_pixels_identical':True})
     report={'output':str(out_path),'page_count':len(final),'overview_pages':overview_count,'sidebar_width_mm':width*25.4/72,
-            'source_preservation':checks,'internal_links_preserved':internal_links,'layout':layout}
+            'source_preservation':checks,'internal_links_preserved':internal_links,'layout':layout,
+            'answer_pages':answer_count,'sidebar_navigation':sidebar_navigation,
+            'legacy_untyped_cards':[card['id'] for page in data['pages'] for card in page['cards']
+                                    if 'kind' not in card]}
     args.report.parent.mkdir(parents=True,exist_ok=True)
     args.report.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     if args.preview_dir:
@@ -241,7 +391,10 @@ footerTop:footer.top-sheet.top,pageHeight:sheet.height};
         for i,p in enumerate(final):
             p.get_pixmap(matrix=fitz.Matrix(1.1,1.1)).save(args.preview_dir/f'page-{i+1:02d}.png')
     print(json.dumps({'output':str(out_path),'pages':len(final),'bytes':out_path.stat().st_size,
-        'source_text_and_pixels':'identical','report':str(args.report)},ensure_ascii=False))
+        'source_text_and_pixels':'identical','answer_pages':answer_count,
+        'sidebar_answer_links':len(sidebar_navigation) * 2,'report':str(args.report)},ensure_ascii=False))
+    source.close()
+    final.close()
 
 
 if __name__=='__main__':
