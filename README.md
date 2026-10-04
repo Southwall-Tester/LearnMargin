@@ -66,6 +66,8 @@ uv run playwright install --with-deps chromium
 
 Windows 也可以在完成安装后运行根目录的 `Start-LearnMargin.cmd`。
 
+更新后先关闭旧服务，再重新启动；仅刷新页面不会更新后端。端口被占用时，启动器会提示处理旧服务，不打开旧页面。
+
 ## 模型与密钥
 
 可从 DeepSeek、OpenAI 或兼容 API 预置开始，配置服务地址、模型名、密钥、视觉输入及 JSON 模式。
