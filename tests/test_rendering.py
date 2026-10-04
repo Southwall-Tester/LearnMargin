@@ -17,6 +17,7 @@ from learnmargin.models import (
     Practice,
     SourceCitation,
     SourceNote,
+    StudyLoad,
     StudyPrompt,
 )
 from learnmargin.rendering import RenderError, build_html, markdown, render_lesson
@@ -101,6 +102,7 @@ async def test_render_a4_long_content_navigation_and_answer_isolation(tmp_path: 
     result = await render_lesson(lesson, tmp_path)
     reader = PdfReader(tmp_path / "lesson.pdf")
     assert result["page_count"] >= 6
+    assert len(result["pause_positions"]) == 1  # Long legacy content preserves only its authored pause.
     assert result["math_count"] == 2
     assert result["content_preserved"]
     assert result["internal_links"] >= 5
@@ -154,52 +156,94 @@ async def test_short_section_pause_stays_in_right_rail_with_completed_content(tm
     assert pause["kind"] == "end" and pause["boundary"] == "example"
     assert pause["right_rail"] and pause["at_boundary_end"]
     assert pause["attached_content_characters"] > 20 and not pause["orphaned"]
-    assert result["pause_plan"][0]["middle_boundary"] is None
+    assert result["pause_plan"][0]["basis"] == "legacy_author"
+    assert result["pause_plan"][0]["estimated_minutes_since_break"] is None
     assert result["pause_only_pages"] == [] and result["content_preserved"]
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("layout", ["a4", "wide"])
-async def test_long_section_adds_one_conditional_pause_at_a_complete_boundary(tmp_path: Path, layout):
+async def test_task_plan_selects_same_break_boundaries_in_a4_and_wide(tmp_path: Path):
     lesson = example_lesson(long=True)
     lesson.sections[0].worked_example += "\n\n" + ("完整例题过程：先确定条件，再计算分子，最后解释结果。" * 70)
     lesson.sections[0].pause.resume = "END_ONLY_RESUME：完成本节练习后再复习。"
-    result = await render_lesson(lesson, tmp_path, layout=layout)
-    pauses = result["pause_positions"]
-    assert len(pauses) == 2
-    middle, end = pauses
-    assert middle["kind"] == "middle" and middle["boundary"] in {"explanation", "example"}
-    assert end["kind"] == "end" and middle["page"] < end["page"]
-    assert result["pause_plan"][0]["baseline_pages"] >= 3
-    assert all(pause["right_rail"] and pause["at_boundary_end"] and not pause["orphaned"] for pause in pauses)
-    reader = PdfReader(tmp_path / "lesson.pdf")
-    middle_text = comparable_pdf_text(reader.pages[middle["page"] - 1].extract_text())
-    end_text = comparable_pdf_text(reader.pages[end["page"] - 1].extract_text())
-    assert "END_ONLY_RESUME" not in middle_text and "END_ONLY_RESUME" in end_text
-    assert "25" in middle_text and "5" in middle_text
-    assert result["content_preserved"] and not result["overflow"]
-    assert len(result["sidebar_navigation"]) == 1
-    assert result["orphan_heading_pages"] == [] and result["pause_only_pages"] == []
+    lesson.sections[0].study_load = StudyLoad(
+        explanation_minutes=25, worked_example_minutes=10, practice_minutes=15,
+        rationale="Fixture task estimates include reconstruction of the explanation and independent practice.",
+    )
+    results = []
+    for layout in ["a4", "wide"]:
+        directory = tmp_path / layout
+        result = await render_lesson(lesson, directory, layout=layout)
+        results.append(result)
+        pauses = result["pause_positions"]
+        assert len(pauses) == 2
+        middle, end = pauses
+        assert middle["kind"] == "middle" and middle["boundary"] == "explanation"
+        assert end["kind"] == "end" and end["boundary"] == "practice-1"
+        assert middle["page"] < end["page"]
+        assert all(point["estimated_minutes_since_break"] == 25 for point in result["pause_plan"])
+        assert all(point["basis"] == "content_estimate" for point in result["pause_plan"])
+        assert all(pause["right_rail"] and pause["at_boundary_end"] and not pause["orphaned"] for pause in pauses)
+        reader = PdfReader(directory / "lesson.pdf")
+        middle_text = comparable_pdf_text(reader.pages[middle["page"] - 1].extract_text())
+        end_text = comparable_pdf_text(reader.pages[end["page"] - 1].extract_text())
+        assert "END_ONLY_RESUME" not in middle_text and "END_ONLY_RESUME" in end_text
+        assert "25" in middle_text and "5" in middle_text
+        assert result["content_preserved"] and not result["overflow"]
+        assert len(result["sidebar_navigation"]) == 1
+        assert result["orphan_heading_pages"] == [] and result["pause_only_pages"] == []
+    assert results[0]["page_count"] != results[1]["page_count"]
+    assert results[0]["pause_plan"] == results[1]["pause_plan"]
 
 
 @pytest.mark.integration
-async def test_old_lesson_without_pause_uses_localized_fallback_without_mutating_data(tmp_path: Path):
-    lesson = example_lesson(practice=False)
+async def test_old_long_lesson_without_pause_does_not_invent_breaks(tmp_path: Path):
+    lesson = example_lesson(long=True, practice=False)
     lesson.sections[0].pause = None
     lesson.text.pause_when = "FALLBACK_WHEN: If your timer has rung, take a short break."
     lesson.text.pause_activity = "FALLBACK_ACTIVITY: Stand up and get water."
     lesson.text.pause_resume = "FALLBACK_RESUME: Recall the relation you just read."
     result = await render_lesson(lesson, tmp_path)
     assert lesson.sections[0].pause is None
-    assert len(result["pause_positions"]) == 1
+    assert result["pause_positions"] == [] and result["pause_plan"] == []
     text = "".join(page.extract_text() for page in PdfReader(tmp_path / "lesson.pdf").pages)
-    assert all(marker in text for marker in ["FALLBACK_WHEN", "FALLBACK_ACTIVITY", "FALLBACK_RESUME"])
-    assert result["pause_positions"][0]["right_rail"]
+    assert all(marker not in text for marker in ["FALLBACK_WHEN", "FALLBACK_ACTIVITY", "FALLBACK_RESUME"])
     assert result["content_preserved"]
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("repetitions", [14, 60, 100])
+async def test_short_practice_group_does_not_add_a_second_break(tmp_path: Path):
+    lesson = example_lesson(long=True)
+    section = lesson.sections[0]
+    section.practice.append(Practice(id="P2", prompt="复述例题中确定分母的办法。", hint="沿用条件事件。", answer="只数条件成立的人。"))
+    section.study_load = StudyLoad(
+        explanation_minutes=12, worked_example_minutes=10, practice_minutes=3,
+        rationale="两个简短同类练习合计约 3 分钟，与讲解和例题组成一个任务组。",
+    )
+    result = await render_lesson(lesson, tmp_path)
+    assert len(result["pause_positions"]) == 1
+    assert result["pause_positions"][0]["boundary"] == "practice-2"
+    assert result["pause_plan"][0]["estimated_minutes_since_break"] == 25
+    assert result["content_preserved"] and not result["overflow"]
+
+
+@pytest.mark.integration
+async def test_only_selected_pause_text_is_rendered_and_math_checked(tmp_path: Path):
+    lesson = example_lesson()
+    lesson.sections[0].study_load = StudyLoad(
+        explanation_minutes=6, worked_example_minutes=5, practice_minutes=3,
+        rationale="A short lesson does not reach a planned break opportunity.",
+    )
+    lesson.sections[0].pause.resume = r"UNUSED_PAUSE: $\NotARealCommand{a}$"
+    result = await render_lesson(lesson, tmp_path)
+    assert result["pause_positions"] == []
+    assert result["math_count"] == 1
+    html = BeautifulSoup((tmp_path / "lesson.html").read_text(encoding="utf-8"), "html.parser")
+    assert not html.select(".pause-source") and "UNUSED_PAUSE" not in html.get_text()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("repetitions", [14, 20, 60, 100])
 async def test_pause_with_taller_existing_sidebar_preserves_question_and_return_target(tmp_path: Path, repetitions):
     lesson = example_lesson(practice=False)
     lesson.sections[0].study_prompts.append(StudyPrompt(

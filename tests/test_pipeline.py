@@ -9,6 +9,7 @@ from learnmargin.localization import chinese_lesson_text
 from learnmargin.models import APIConfig, Document, GenerateRequest, Scope, SourceUnit
 from learnmargin.pipeline import generate_lesson, make_units, parse_range, source_content
 from learnmargin.storage import Store
+from learnmargin.study_rhythm import plan_pauses
 
 DOC_ID = "a" * 32
 
@@ -55,6 +56,8 @@ def section(index, *, reference=None, duplicate_prompt=False):
             "source_refs": [reference or f"{DOC_ID}:{index}"],
             "explanation": "这里讨论条件如何改变参考范围，以及独立性需要满足什么等式。" * 3,
             "worked_example": "补充例题：从十个对象中选出满足条件的四个，再计算目标比例。" * 2,
+            "study_load": {"explanation_minutes": 8, "worked_example_minutes": 5,
+                           "practice_minutes": 0, "rationale": "理解条件限制，再跟随一个集合计数例题。"},
             "practice": [], "study_prompts": [{"id": "shared" if duplicate_prompt else f"s{index}-a1",
                 "kind": "action", "when": "完成例题后", "task": "遮住例题，重做一次后再核对。",
                 "check": "对照讲义标记第一处不一致的步骤。"}]}
@@ -62,7 +65,7 @@ def section(index, *, reference=None, duplicate_prompt=False):
 
 def review_draft(schema, user):
     marker = "待审校初稿JSON："
-    if schema.__name__ == "LessonSection" and marker in user:
+    if schema.__name__ == "GeneratedLessonSection" and marker in user:
         return json.JSONDecoder().raw_decode(user.split(marker, 1)[1].lstrip())[0]
     return None
 
@@ -122,14 +125,12 @@ async def test_selected_language_reaches_every_writing_stage_and_saved_lesson(wo
     assert len(provider.calls) == 5  # plan + two drafts + two reviews; no translation call
     assert all(language in prompt for _, prompt, _ in provider.calls)
     assert lesson.text.pause_when == localized_plan["text"]["pause_when"]
-    assert all(item.pause and item.pause.when == localized_plan["text"]["pause_when"]
-               and item.pause.activity == localized_plan["text"]["pause_activity"]
-               and item.pause.resume == localized_plan["text"]["pause_resume"] for item in lesson.sections)
+    assert all(item.pause is None for item in lesson.sections)
     saved = json.loads((output / "plan.json").read_text(encoding="utf-8"))
     assert saved["text"]["pause_when"] == lesson.text.pause_when
 
 
-async def test_generation_preserves_scope_sources_and_adds_conditional_rest(workspace):
+async def test_generation_preserves_scope_sources_and_content_load(workspace):
     store, output = workspace
     provider = SequenceProvider([plan(), section(1), section(2)])
     progress = []
@@ -138,8 +139,7 @@ async def test_generation_preserves_scope_sources_and_adds_conditional_rest(work
     assert [source.ref for source in lesson.sources] == [f"{DOC_ID}:1", f"{DOC_ID}:2"]
     assert [item.id for item in lesson.sections] == ["s1", "s2"]
     assert lesson.warnings == ["测试材料警告"]
-    assert all(item.pause and item.pause.minutes == 5 and "若" in item.pause.when
-               and "25分钟" in item.pause.when and item.pause.resume for item in lesson.sections)
+    assert all(item.pause is None and item.study_load.explanation_minutes == 8 for item in lesson.sections)
     assert (output / "selection.json").is_file()
     assert (output / "plan.json").is_file()
     assert (output / "section-2.json").is_file()
@@ -147,7 +147,7 @@ async def test_generation_preserves_scope_sources_and_adds_conditional_rest(work
 
 
 @pytest.mark.parametrize("existing", [(), (1,), (2,), (1, 2)])
-async def test_each_section_has_rest_guidance_without_replacing_specific_pause_or_extra_requests(workspace, existing):
+async def test_optional_rest_guidance_and_load_survive_without_forced_stops_or_extra_requests(workspace, existing):
     store, output = workspace
     planned = plan()
     sections = [section(1), section(2)]
@@ -165,18 +165,52 @@ async def test_each_section_has_rest_guidance_without_replacing_specific_pause_o
     lesson = await generate_lesson(request(), [document()], store, output, provider, lambda *_: None)
     assert len(provider.calls) == 5
     for index, completed in enumerate(lesson.sections, 1):
-        assert completed.pause is not None
         if index in existing:
             assert completed.pause.model_dump() == pauses[index]
         else:
-            assert completed.pause.model_dump() == {
-                "minutes": 5, "when": planned["text"]["pause_when"],
-                "activity": planned["text"]["pause_activity"], "resume": planned["text"]["pause_resume"],
-            }
+            assert completed.pause is None
         saved = json.loads((output / f"section-{index}.json").read_text(encoding="utf-8"))
-        assert saved["pause"] == completed.pause.model_dump()
+        assert saved["pause"] == (completed.pause.model_dump() if completed.pause else None)
+        assert saved["study_load"] == sections[index - 1]["study_load"]
         assert completed.study_prompts[0].task == expected_prompts[index - 1][0]["task"]
         assert len(completed.study_prompts) == len(expected_prompts[index - 1])
+
+
+async def test_reviewed_load_is_persisted_and_drives_schedule_without_an_extra_model_call(workspace):
+    store, output = workspace
+
+    def revise(draft):
+        draft["study_load"]["explanation_minutes"] = 18
+        draft["study_load"]["rationale"] = "审校发现需要逐步检查三个条件，再跟随例题核对。"
+        return draft
+
+    provider = SequenceProvider([plan(), section(1), section(2)], revise=revise)
+    lesson = await generate_lesson(request(), [document()], store, output, provider, lambda *_: None)
+    assert len(provider.calls) == 5
+    pauses = plan_pauses(lesson)
+    assert [(item["section"], item["boundary"], item["estimated_minutes_since_break"])
+            for item in pauses] == [(1, "example", 23), (2, "example", 23)]
+    for index, item in enumerate(lesson.sections, 1):
+        saved = json.loads((output / f"section-{index}.json").read_text(encoding="utf-8"))
+        assert saved["study_load"] == item.study_load.model_dump()
+        assert saved["study_load"]["explanation_minutes"] == 18
+
+
+async def test_both_writing_stages_map_every_content_block_to_its_actual_break_boundary(workspace):
+    store, output = workspace
+    provider = SequenceProvider([plan(), section(1), section(2)])
+    await generate_lesson(request(language="English"), [document()], store, output, provider, lambda *_: None)
+    writing_prompts = [prompt for schema, prompt, _ in provider.calls if schema == "GeneratedLessonSection"]
+    assert len(writing_prompts) == 4
+    for prompt in writing_prompts:
+        assert "explanation_minutes包含explanation和第一条study_prompts（若有）" in prompt
+        assert "worked_example_minutes包含source_notes、worked_example和第二条study_prompts（若有）" in prompt
+        assert "practice_minutes包含全部practice作答及答案核对，无练习时为0" in prompt
+        assert "source_notes排在explanation休息边界之后" in prompt
+        assert "每项内容只计入上述一个字段，不遗漏、不重复累计" in prompt
+        assert "when按所选输出语言明确" in prompt
+    assert all("若距上次休息已专注约25分钟，休息5分钟；时间未到可继续" in prompt
+               for _, prompt, _ in provider.calls)
 
 
 async def test_topic_selection_cannot_forge_source_locations(workspace):
@@ -238,7 +272,7 @@ async def test_successful_final_plan_repair_is_actually_validated(workspace):
     assert len(lesson.sources) == 2
     assert len(lesson.sections) == 2
     assert [name for name, *_ in provider.calls].count("LessonPlan") == 3
-    assert [name for name, *_ in provider.calls].count("LessonSection") == 4
+    assert [name for name, *_ in provider.calls].count("GeneratedLessonSection") == 4
 
 
 async def test_plan_must_honor_requested_number_of_sections(workspace):
@@ -336,7 +370,7 @@ class IntegrationProvider:
                 item["source_refs"] = (self.selected_refs[-1:] if self.reference_only_plan
                                        else self.selected_refs.copy())
             return schema.model_validate(result)
-        if schema.__name__ == "LessonSection":
+        if schema.__name__ == "GeneratedLessonSection":
             planned = json.JSONDecoder().raw_decode(user.split("本节计划：", 1)[1])[0]
             result = section(int(planned["id"][1:]))
             result["source_refs"] = planned["source_refs"]
@@ -456,7 +490,7 @@ async def test_a_reference_only_plan_cannot_replace_the_primary_lesson(workspace
     with pytest.raises(ValueError, match="计划|主资料"):
         await generate_lesson(multiple_request(), multiple_documents(), store, output, provider, lambda *_: None)
     assert [name for name, *_ in provider.calls].count("LessonPlan") == 3
-    assert not any(name == "LessonSection" for name, *_ in provider.calls)
+    assert not any(name == "GeneratedLessonSection" for name, *_ in provider.calls)
 
 
 @pytest.mark.parametrize("fault", ["omit_notes", "forged_note"])

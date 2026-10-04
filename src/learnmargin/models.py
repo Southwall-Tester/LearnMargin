@@ -127,7 +127,7 @@ class Practice(Model):
 
 class Pause(Model):
     minutes: int = Field(default=5, ge=1, le=30)
-    when: str
+    when: str = Field(description="用所选输出语言表达：若距上次休息已专注约25分钟，休息5分钟；时间未到可继续。")
     activity: str
     resume: str
 
@@ -136,6 +136,26 @@ class SourceNote(Model):
     ref: str
     explanation: str = Field(min_length=1, description="这份材料如何解释该知识点，忠实转述，不编引文。")
     relation: str = Field(min_length=1, description="与主材料或其他资料的互补、条件或差异；一致时如实说明。")
+
+
+class StudyLoad(Model):
+    explanation_minutes: float = Field(gt=0, le=180, allow_inf_nan=False,
+        description="理解explanation的概念和完整推导，加上第一条study_prompts（若有）的合计估计分钟数；"
+        "不含source_notes，不按页数或字数换算。")
+    worked_example_minutes: float = Field(gt=0, le=180, allow_inf_nan=False,
+        description="理解source_notes、跟随worked_example并核对，加上第二条study_prompts（若有）的"
+        "合计估计分钟数；这些内容排在explanation休息边界之后，只计入本字段。")
+    practice_minutes: float = Field(ge=0, le=180, allow_inf_nan=False,
+        description="完成本节全部练习并核对答案的合计估计分钟数；没有练习时为0。")
+    rationale: str = Field(min_length=1, max_length=400,
+        description="用所选输出语言简述难度、推导步骤、作答及核对所需负荷的依据；不是实际学习记录。")
+
+    @field_validator("rationale")
+    @classmethod
+    def meaningful_rationale(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("学习负荷估计必须说明依据。")
+        return value.strip()
 
 
 class LessonSection(Model):
@@ -148,6 +168,19 @@ class LessonSection(Model):
     practice: list[Practice] = Field(default_factory=list, max_length=2)
     study_prompts: list[StudyPrompt] = Field(default_factory=list, max_length=2)
     pause: Pause | None = None
+    study_load: StudyLoad | None = None
+
+    @model_validator(mode="after")
+    def practice_load_matches_content(self):
+        if self.study_load is not None and bool(self.practice) != (self.study_load.practice_minutes > 0):
+            raise ValueError("有练习时须估计作答和核对负荷；没有练习时practice_minutes必须为0。")
+        return self
+
+
+class GeneratedLessonSection(LessonSection):
+    """New generation requires estimates; saved lessons remain backwards compatible."""
+
+    study_load: StudyLoad
 
 
 class SourceCitation(Model):

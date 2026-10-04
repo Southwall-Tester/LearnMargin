@@ -3,6 +3,7 @@
   "use strict";
   const pages = document.getElementById("pages");
   const flow = document.getElementById("flow");
+  const pausePlan = JSON.parse(flow.dataset.pausePlan || "[]");
   const cleanText = node => node.textContent.replace(/\s+/g, "");
   const errors = [];
   try {
@@ -190,41 +191,8 @@
       previousLabel = label;
     }
     }
-    // Measure without reminders first: page span only chooses a safe content
-    // boundary; it does not estimate how many minutes somebody has studied.
-    paginate();
-    const pausePlan = [];
-    for (const section of flow.querySelectorAll(".flow-section[data-section]")) {
-      const source = section.querySelector(".pause-source");
-      if (!source) continue;
-      const sectionNumber = section.dataset.section;
-      const rendered = [...pages.querySelectorAll(`.row[data-section="${sectionNumber}"]`)];
-      const sheetIndex = row => [...pages.children].indexOf(row.closest(".sheet"));
-      const firstPage = sheetIndex(rendered[0]);
-      const lastPage = sheetIndex(rendered.at(-1));
-      const boundaries = [...section.querySelectorAll(":scope > .row[data-boundary]")];
-      const terminal = boundaries.at(-1);
-      function attach(row, kind) {
-        row.classList.add("pause-attached");
-        row.querySelector("aside").append(source.querySelector(`[data-pause-kind="${kind}"]`).cloneNode(true));
-      }
-      attach(terminal, "end");
-      let middle = null;
-      if (lastPage - firstPage >= 2) {
-        for (const boundary of ["explanation", "example"]) {
-          const row = boundaries.find(candidate => candidate.dataset.boundary === boundary);
-          if (!row || row === terminal) continue;
-          const end = rendered.filter(candidate => candidate.dataset.boundary === boundary).at(-1);
-          const boundaryPage = sheetIndex(end);
-          // Keep reminders separated. Never insert one within a proof or worked example.
-          if (boundaryPage > firstPage && boundaryPage < lastPage) {
-            attach(row, "middle"); middle = boundary; break;
-          }
-        }
-      }
-      pausePlan.push({section: Number(sectionNumber), baseline_pages: lastPage - firstPage + 1,
-        middle_boundary: middle, end_boundary: terminal.dataset.boundary});
-    }
+    // Python selects complete learning-task boundaries before layout. A4 and
+    // wide pages render that same plan; page count is never a study timer.
     const originalText = new Map();
     function recordContent() {
     originalText.clear();
@@ -235,21 +203,6 @@
     }
     recordContent();
     paginate();
-    const crowded = pausePlan.filter(plan => {
-      if (!plan.middle_boundary) return false;
-      const cards = [...pages.querySelectorAll(`.row[data-section="${plan.section}"] .pause`)];
-      return cards.length === 2 && cards[0].closest(".sheet") === cards[1].closest(".sheet");
-    });
-    if (crowded.length) {
-      for (const plan of crowded) {
-        const row = flow.querySelector(`.flow-section[data-section="${plan.section}"] .row[data-boundary="${plan.middle_boundary}"]`);
-        row.querySelector('.pause[data-pause-kind="middle"]').remove();
-        row.classList.remove("pause-attached");
-        plan.middle_boundary = null;
-        plan.middle_omitted_reason = "shared_page_after_layout";
-      }
-      recordContent(); paginate();
-    }
     const renderedText = new Map();
     pages.querySelectorAll("[data-origin]").forEach(node => {
       const key = node.dataset.origin;
@@ -307,6 +260,10 @@
     });
     if (pausePositions.some(position => position.orphaned || !position.right_rail || !position.at_boundary_end))
       throw new Error("休息提示未与完整内容边界对齐，已停止导出。");
+    if (pausePositions.length !== pausePlan.length || pausePlan.some(planned =>
+      pausePositions.filter(position => position.section === planned.section &&
+        position.boundary === planned.boundary && position.kind === planned.kind).length !== 1))
+      throw new Error("休息提示与学习任务计划不一致，已停止导出。");
     window.learnmarginReport = {page_count: pageCount, math_count: pages.querySelectorAll(".math").length, overflow: overflows,
       content_preserved: preserved, internal_links: links.length, answer_section_page: answerPage,
       navigation_only_pages: navigationOnlyPages, orphan_heading_pages: orphanHeadingPages,
