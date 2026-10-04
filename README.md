@@ -122,6 +122,7 @@ uv run pytest
 npm --prefix frontend test
 npm --prefix frontend run build
 uv run python scripts/check_skill.py
+uv run --with pymupdf python -m pytest -q tests/test_skill_sidebars.py
 uv run python -m build
 uv run python scripts/package_skill.py
 uv run python scripts/verify_package.py

@@ -46,7 +46,11 @@ def demo_lesson() -> Lesson:
                     hint="先确定星号卡的总数，再比较交集与乘积。",
                     answer="$P(R|S)=4/10=2/5$。$P(R\\cap S)=4/40=1/10$，"
                            "$P(R)P(S)=(16/40)(10/40)=1/10$，所以独立。")],
-                study_prompts=[StudyPrompt(id="s2-a1", kind="action", when="独立做题时", task="分别算交集概率和两个边际概率的乘积，再比较。", check="不要把两个反向条件概率互相比较。")]),
+                study_prompts=[StudyPrompt(id="s2-a1", kind="question", when="看完独立性例题后",
+                    task="遮住解答，重算班级例题中的交集概率与边际概率乘积，再判断是否独立。",
+                    check="",
+                    answer="$P(A\\cap B)=6/30=1/5$，$P(A)P(B)=(12/30)(10/30)=2/15$。"
+                           "两者不相等，所以不独立。")]),
         ],
         review_plan=["明天只看班级题干，重建两个条件概率。", "隔两天重做卡片题，说明独立性的判断依据。"],
         method_chapters=[4, 6, 7, 14],

@@ -45,6 +45,8 @@ jobs:
           uv run ruff check src tests scripts
           uv run pytest -q
           uv run python scripts/check_skill.py
+      - name: Check standalone skill renderer
+        run: uv run --with pymupdf python -m pytest -q tests/test_skill_sidebars.py
       - name: Build distributable packages
         run: |
           uv run python -m build
