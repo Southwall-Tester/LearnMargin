@@ -1,0 +1,4 @@
+interface:
+  display_name: "LearnMargin"
+  short_description: "生成带内容总览与学习侧栏的 PDF 讲义，并将试读反馈同步落实到讲义和技能"
+  default_prompt: "用 $learnmargin 将指定范围的材料整理为 A4 内侧栏学习 PDF，先给内容总览，只加入有用的学习提示，并依据反馈同步修改讲义与技能。"

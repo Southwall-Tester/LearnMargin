@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>{{ lesson.title }} · LearnMargin</title>
+  <style>{{ katex_css }}</style>
+  <style>:root{--page-width:{{ page_width }}mm;--rail-width:{{ 54 if layout == 'a4' else 66 }}mm}@page{size:{{ page_width }}mm 297mm;margin:0}{{ stylesheet }}</style>
+</head>
+<body>
+<main id="pages" aria-label="学习讲义"></main>
+<div id="flow" aria-hidden="true">
+  <section class="flow-section" data-new-page="true" data-label="内容总览" data-role="overview">
+    <div class="row full keep-next"><div class="main" id="overview"><p class="eyebrow">LEARNMARGIN / GUIDED STUDY NOTES</p><h1>{{ lesson.title | mdi }}</h1><p class="subtitle">{{ lesson.subtitle | mdi }}</p><p class="scope">{{ lesson.scope_note | mdi }}</p></div></div>
+    <div class="row full"><div class="main"><h2>先理解全局</h2>{{ lesson.overview.summary | md }}</div></div>
+    {% for concept in lesson.overview.concepts %}<div class="row"><div class="main"><h3>{{ concept.name | mdi }}</h3>{{ concept.explanation | md }}</div><aside class="concept-relation"><span class="card-kind">概念关系</span>{{ concept.connections | md }}</aside></div>{% endfor %}
+    <div class="row"><div class="main"><h2>学习路线</h2><ol>{% for step in lesson.overview.learning_path %}<li>{{ step | md }}</li>{% endfor %}</ol></div><aside><div class="study-card"><span class="card-kind">学习节奏</span><p>可先试 25 分钟专注、5 分钟休息。计时先到或累了，记下卡点即可停下；时长可调整。</p></div></aside></div>
+    {% if lesson.overview.prerequisites %}<div class="row full"><div class="main"><h3>需要的基础</h3><ul>{% for prerequisite in lesson.overview.prerequisites %}<li>{{ prerequisite | md }}</li>{% endfor %}</ul></div></div>{% endif %}
+    <div class="row full keep-next toc-row"><div class="main"><h3>正文导航</h3></div></div>
+    {% for section in lesson.sections %}<div class="row full toc-row"><div class="main"><a href="#section-{{ loop.index }}">{{ loop.index }} / {{ section.title | mdi }}</a></div></div>{% endfor %}
+    {% if has_answers %}<div class="row full toc-row"><div class="main"><a href="#answers">参考解答</a></div></div>{% endif %}
+    <div class="row full toc-row"><div class="main"><a href="#review">复习与来源</a></div></div>
+  </section>
+  {% for section in lesson.sections %}{% set section_no = loop.index %}
+  <section class="flow-section" data-new-page="true" data-label="{{ section.title }}">
+    <div class="row full keep-next"><div class="main" id="section-{{ section_no }}"><p class="eyebrow">SECTION {{ section_no }}</p><h2 class="section-title">{{ section.title | mdi }}</h2><p class="references">材料：{% for ref in section.source_refs %}{% set source_no = source_refs[ref] %}{% set source = lesson.sources[source_no - 1] %}<a href="#source-{{ source_no }}">[{{ source_no }}] {{ source.document }} · {{ source.label }}</a> <button type="button" class="web-source-button" data-source-ref="{{ ref }}" aria-label="查看原材料：{{ source.document }}，{{ source.label }}">查看原材料</button>{% if not loop.last %}；{% endif %}{% endfor %}</p></div></div>
+    <div class="row splittable"><div class="main">{{ section.explanation | md }}</div><aside>{% if section.study_prompts %}{% set prompt = section.study_prompts[0] %}{% set prompt_no = 1 %}{% include 'prompt.html' %}{% endif %}</aside></div>
+    {% if section.source_notes %}
+    <div class="row full keep-next"><div class="main"><h3 class="block-label">资料对照</h3></div></div>
+    {% for note in section.source_notes %}{% set source_no = source_refs[note.ref] %}{% set source = lesson.sources[source_no - 1] %}
+    <div class="row full splittable"><div class="main source-note"><p class="source-note-label"><span class="source-role">{{ role_labels[source.role] }}</span> <a href="#source-{{ source_no }}">[{{ source_no }}] {{ source.document }} · {{ source.label }}</a> <button type="button" class="web-source-button" data-source-ref="{{ note.ref }}" aria-label="查看原材料：{{ source.document }}，{{ source.label }}">查看原材料</button></p>{{ note.explanation | md }}{% if note.relation %}<div class="source-relation">{{ note.relation | md }}</div>{% endif %}</div></div>
+    {% endfor %}{% endif %}
+    <div class="row keep-next"><div class="main"><h3 class="block-label">完整例题 · 理解每一步</h3></div><aside></aside></div>
+    <div class="row splittable"><div class="main worked-example">{{ section.worked_example | md }}</div><aside>{% if section.study_prompts | length > 1 %}{% set prompt = section.study_prompts[1] %}{% set prompt_no = 2 %}{% include 'prompt.html' %}{% endif %}</aside></div>
+    {% for practice in section.practice %}
+    <div class="row practice splittable"><div class="main" id="practice-{{ section_no }}-{{ loop.index }}"><h3>独立练习 {{ practice.id }}</h3>{{ practice.prompt | md }}<div class="hint"><span>卡住时看这条提示</span>{{ practice.hint | md }}</div><p><a href="#answer-{{ section_no }}-{{ loop.index }}">尝试后前往参考解答 →</a></p></div><aside></aside></div>
+    {% endfor %}
+    {% if section.pause %}<div class="row full pause-row"><div class="main pause"><span class="card-kind">休息点 · {{ section.pause.minutes }} 分钟</span><p>{{ section.pause.when | mdi }}</p><p>{{ section.pause.activity | mdi }}</p><p><strong>回来后：</strong>{{ section.pause.resume | mdi }}</p></div></div>{% endif %}
+  </section>
+  {% endfor %}
+  {% if has_answers %}<section class="flow-section answers" data-new-page="true" data-label="参考解答" data-role="answers">
+    <div class="row full keep-next"><div class="main" id="answers"><p class="eyebrow">CHECK &amp; REBUILD</p><h2 class="section-title">参考解答</h2><p>先独立尝试，再核对第一处差异。若概念仍不清楚，回看对应讲解后重新做一遍。</p></div></div>
+    {% for section in lesson.sections %}{% set section_no = loop.index %}{% for practice in section.practice %}
+    <div class="row full splittable"><div class="main" id="answer-{{ section_no }}-{{ loop.index }}"><h3>{{ practice.id }} · {{ section.title | mdi }}</h3>{{ practice.answer | md }}<p><a href="#practice-{{ section_no }}-{{ loop.index }}">← 返回题目</a></p></div></div>
+    {% endfor %}{% for prompt in section.study_prompts %}{% if prompt.answer %}
+    <div class="row full splittable"><div class="main" id="prompt-answer-{{ section_no }}-{{ loop.index }}"><h3>侧栏 {{ prompt.id }} · {{ section.title | mdi }}</h3>{{ prompt.answer | md }}{% if prompt.check %}<div class="check">{{ prompt.check | md }}</div>{% endif %}<p><a class="nav-button" href="#prompt-{{ section_no }}-{{ loop.index }}">← 返回这条提示</a></p></div></div>
+    {% endif %}{% endfor %}{% endfor %}
+  </section>{% endif %}
+  <section class="flow-section" data-new-page="true" data-label="复习与来源" data-role="review">
+    <div class="row full keep-next"><div class="main" id="review"><p class="eyebrow">RETURN &amp; CONNECT</p><h2 class="section-title">复习与来源</h2></div></div>
+    {% for step in lesson.review_plan %}<div class="row full"><div class="main review-step"><span class="card-kind">复习安排 {{ loop.index }}</span>{{ step | md }}</div></div>{% endfor %}
+    <div class="row full"><div class="main"><h3>学习方法依据</h3><p>参考《学习之道》第 {{ lesson.method_chapters | join('、') }} 章的方法摘要；配套例题与提示由本讲义结合材料组织。节奏可按试读反馈调整。</p></div></div>
+    {% for source in lesson.sources %}<div class="row full"><div class="main source-entry" id="source-{{ loop.index }}"><strong>[{{ loop.index }}] {{ source.document }}</strong><p><span class="source-role">{{ role_labels[source.role] }}</span> · {{ source.label }} <button type="button" class="web-source-button" data-source-ref="{{ source.ref }}" aria-label="查看原材料：{{ source.document }}，{{ source.label }}">查看原材料</button></p></div></div>{% endfor %}
+    {% if lesson.warnings %}<div class="row full"><div class="main"><h3>材料与范围说明</h3><ul>{% for warning in lesson.warnings %}<li>{{ warning }}</li>{% endfor %}</ul></div></div>{% endif %}
+    <div class="row full"><div class="main"><a href="#overview">↑ 返回内容总览</a></div></div>
+  </section>
+</div>
+<script>{{ katex_script }}</script>
+<script>{{ paginator }}</script>
+</body>
+</html>

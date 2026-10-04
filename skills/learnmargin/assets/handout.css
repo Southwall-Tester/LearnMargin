@@ -1,0 +1,27 @@
+
+@page { size:A4; margin:14mm 16mm 17mm; }
+* { box-sizing:border-box; }
+body { margin:0; color:#243248; font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif; font-size:10.4pt; line-height:1.55; }
+.page { break-after:page; }
+.page:last-child { break-after:auto; }
+.kicker { border-bottom:1px solid #b8c8d9; color:#536e89; font-size:9pt; padding-bottom:7px; margin-bottom:15px; letter-spacing:.6px; }
+.kicker span { float:right; }
+h1 { font-size:21pt; line-height:1.3; margin:0 0 16px; color:#18364f; font-weight:700; }
+h2 { font-size:12pt; color:#155e75; margin:13px 0 6px; line-height:1.4; }
+p { margin:6px 0; text-align:justify; }
+.lead { font-size:11.1pt; line-height:1.75; }
+.eq { font-family:"Cambria Math","Microsoft YaHei",serif; font-size:12pt; text-align:center; background:#f2f5fa; padding:7px 12px; margin:7px 0; border-radius:5px; line-height:1.5; break-inside:avoid; }
+.eq.left { text-align:left; padding-left:19px; }
+.eq em { font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif; font-size:8.6pt; font-style:normal; color:#63748a; margin-left:16px; }
+.note { background:#f5f6f7; border-left:3px solid #8396a9; padding:10px 13px; margin:12px 0; font-size:9.5pt; line-height:1.65; }
+.takeaway { background:#edf7f7; border-left:3px solid #18788b; padding:10px 13px; margin-top:14px; font-size:10pt; }
+.rule { border:1px solid #b4d6df; padding:9px 12px 3px; color:#155e75; font-weight:bold; }
+.rule .eq { font-weight:normal; color:#243248; }
+table { width:100%; border-collapse:collapse; margin:9px 0; font-size:9.6pt; line-height:1.55; break-inside:avoid; }
+th { background:#e9f0f6; color:#203d57; text-align:left; font-weight:bold; }
+td,th { border:1px solid #d6dfe8; padding:6px 9px; vertical-align:top; }
+.sub td { background:#f8fafc; }
+ol { padding-left:24px; margin:8px 0; }
+li { margin:10px 0; padding-left:2px; }
+.sources { margin-top:13px; border-top:1px solid #d4dde7; padding-top:9px; font-size:8.4pt; color:#5b6a7a; line-height:1.6; }
+a { color:#155e75; text-decoration:none; }
