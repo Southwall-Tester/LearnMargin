@@ -22,6 +22,19 @@ from learnmargin.models import (
 from learnmargin.rendering import RenderError, build_html, markdown, render_lesson
 
 
+def sidebar_pdf_text(reader: PdfReader, left: float) -> str:
+    """Read the actual rail across pages without interleaving main text/footers."""
+    chunks = []
+    for page in reader.pages:
+        def visit(text, cm, tm, font, size):
+            x = tm[4] * cm[0] + tm[5] * cm[2] + cm[4]
+            y = tm[4] * cm[1] + tm[5] * cm[3] + cm[5]
+            if x >= left - 1 and 45 <= y <= float(page.mediabox.height) - 35:
+                chunks.append(text)
+        page.extract_text(visitor_text=visit)
+    return "".join("".join(chunks).split())
+
+
 def comparable_pdf_text(value: str) -> str:
     # Noto's duplicate CJK glyphs can use radical code points in ToUnicode.
     # These two fixture characters have Equivalent_Unified_Ideograph mappings
@@ -129,6 +142,96 @@ async def test_empty_exercises_and_wide_layout(tmp_path: Path):
     assert result["answer_section_page"] == 0
     assert result["page_sizes_pt"][0][0] > 800
     assert result["blocked_requests"] == []
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("layout", ["a4", "wide"])
+async def test_short_section_pause_stays_in_right_rail_with_completed_content(tmp_path: Path, layout):
+    lesson = example_lesson(practice=False)
+    result = await render_lesson(lesson, tmp_path, layout=layout)
+    assert len(result["pause_positions"]) == 1
+    pause = result["pause_positions"][0]
+    assert pause["kind"] == "end" and pause["boundary"] == "example"
+    assert pause["right_rail"] and pause["at_boundary_end"]
+    assert pause["attached_content_characters"] > 20 and not pause["orphaned"]
+    assert result["pause_plan"][0]["middle_boundary"] is None
+    assert result["pause_only_pages"] == [] and result["content_preserved"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("layout", ["a4", "wide"])
+async def test_long_section_adds_one_conditional_pause_at_a_complete_boundary(tmp_path: Path, layout):
+    lesson = example_lesson(long=True)
+    lesson.sections[0].worked_example += "\n\n" + ("完整例题过程：先确定条件，再计算分子，最后解释结果。" * 70)
+    lesson.sections[0].pause.resume = "END_ONLY_RESUME：完成本节练习后再复习。"
+    result = await render_lesson(lesson, tmp_path, layout=layout)
+    pauses = result["pause_positions"]
+    assert len(pauses) == 2
+    middle, end = pauses
+    assert middle["kind"] == "middle" and middle["boundary"] in {"explanation", "example"}
+    assert end["kind"] == "end" and middle["page"] < end["page"]
+    assert result["pause_plan"][0]["baseline_pages"] >= 3
+    assert all(pause["right_rail"] and pause["at_boundary_end"] and not pause["orphaned"] for pause in pauses)
+    reader = PdfReader(tmp_path / "lesson.pdf")
+    middle_text = comparable_pdf_text(reader.pages[middle["page"] - 1].extract_text())
+    end_text = comparable_pdf_text(reader.pages[end["page"] - 1].extract_text())
+    assert "END_ONLY_RESUME" not in middle_text and "END_ONLY_RESUME" in end_text
+    assert "25" in middle_text and "5" in middle_text
+    assert result["content_preserved"] and not result["overflow"]
+    assert len(result["sidebar_navigation"]) == 1
+    assert result["orphan_heading_pages"] == [] and result["pause_only_pages"] == []
+
+
+@pytest.mark.integration
+async def test_old_lesson_without_pause_uses_localized_fallback_without_mutating_data(tmp_path: Path):
+    lesson = example_lesson(practice=False)
+    lesson.sections[0].pause = None
+    lesson.text.pause_when = "FALLBACK_WHEN: If your timer has rung, take a short break."
+    lesson.text.pause_activity = "FALLBACK_ACTIVITY: Stand up and get water."
+    lesson.text.pause_resume = "FALLBACK_RESUME: Recall the relation you just read."
+    result = await render_lesson(lesson, tmp_path)
+    assert lesson.sections[0].pause is None
+    assert len(result["pause_positions"]) == 1
+    text = "".join(page.extract_text() for page in PdfReader(tmp_path / "lesson.pdf").pages)
+    assert all(marker in text for marker in ["FALLBACK_WHEN", "FALLBACK_ACTIVITY", "FALLBACK_RESUME"])
+    assert result["pause_positions"][0]["right_rail"]
+    assert result["content_preserved"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("repetitions", [14, 60, 100])
+async def test_pause_with_taller_existing_sidebar_preserves_question_and_return_target(tmp_path: Path, repetitions):
+    lesson = example_lesson(practice=False)
+    lesson.sections[0].study_prompts.append(StudyPrompt(
+        id="S2", kind="question", when="读完完整例题", task="TALL_QUESTION: " + "Describe each denominator term. " * repetitions,
+        check="检查完整解释是否保留。", answer="TALL_ANSWER：分母表示条件事件。",
+    ))
+    result = await render_lesson(lesson, tmp_path)
+    assert len(result["sidebar_navigation"]) == 2
+    assert result["content_preserved"] and result["overflow"] == []
+    assert all(not pause["orphaned"] and pause["at_boundary_end"] for pause in result["pause_positions"])
+    text = "".join(page.extract_text() for page in PdfReader(tmp_path / "lesson.pdf").pages)
+    assert "TALL_QUESTION" in text and "TALL_ANSWER" in text
+    rail = sidebar_pdf_text(PdfReader(tmp_path / "lesson.pdf"), result["sidebar_navigation"][1]["prompt"]["left_pt"])
+    assert rail.count("Describeeachdenominatorterm.") == repetitions
+    assert result["pause_positions"][0]["attached_content_characters"] > 0
+
+
+@pytest.mark.integration
+async def test_long_sidebar_keeps_formula_only_main_intact_with_final_pause(tmp_path: Path):
+    lesson = example_lesson(practice=False)
+    lesson.sections[0].worked_example = r"$$P(A\mid B)=\frac{P(A\cap B)}{P(B)}.$$"
+    lesson.sections[0].study_prompts.append(StudyPrompt(
+        id="S2", kind="question", when="After the example", task="FORMULA_QUESTION: " + "Describe each denominator term. " * 100,
+        check="Check all terms.", answer="FORMULA_ANSWER: The denominator is the given event.",
+    ))
+    result = await render_lesson(lesson, tmp_path)
+    assert result["content_preserved"] and result["overflow"] == []
+    assert result["math_count"] == 2
+    assert len(result["sidebar_navigation"]) == 2
+    assert all(not pause["orphaned"] and pause["at_boundary_end"] for pause in result["pause_positions"])
+    rail = sidebar_pdf_text(PdfReader(tmp_path / "lesson.pdf"), result["sidebar_navigation"][1]["prompt"]["left_pt"])
+    assert rail.count("Describeeachdenominatorterm.") == 100
 
 
 @pytest.mark.integration

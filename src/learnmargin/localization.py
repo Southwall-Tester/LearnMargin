@@ -60,9 +60,9 @@ class LessonText(BaseModel):
     scope_topic: str = label("学习范围中的用户知识点标签：知识点")
     scope_units: str = label("学习范围中的总数量标签：材料单元")
     scope_location_note: str = note("范围说明：位置按文件页码、幻灯片或章节编号，不等同于印刷页码。")
-    pause_when: str = note("兜底休息条件：完成本节后，若本轮已专注约25分钟，休息5分钟；计时先到可记下卡点先停。")
+    pause_when: str = note("就地休息条件：若本轮已专注约25分钟，休息5分钟；计时先到可记下卡点先停。")
     pause_activity: str = note("兜底休息动作：放下讲义，起身走动或喝水。")
-    pause_resume: str = note("兜底返回动作：先用一句话回想本节核心关系，再继续；不要假设存在下一节。")
+    pause_resume: str = note("就地返回动作：先回想刚读过的核心关系，再从标记处继续。")
 
 
 def chinese_lesson_text() -> LessonText:
@@ -83,6 +83,6 @@ def chinese_lesson_text() -> LessonText:
         scope_all="全部导入内容", scope_primary="主材料单元", scope_reference="参考资料单元",
         scope_topic="知识点", scope_units="材料单元",
         scope_location_note="位置按文件页码、幻灯片或章节编号，不等同于印刷页码。",
-        pause_when="完成本节后，若本轮已专注约25分钟，休息5分钟；计时先到可记下卡点先停。",
-        pause_activity="放下讲义，起身走动或喝水。", pause_resume="回来先用一句话回想本节的核心关系，再继续学习。",
+        pause_when="若本轮已专注约25分钟，休息5分钟；计时先到可记下卡点先停。",
+        pause_activity="放下讲义，起身走动或喝水。", pause_resume="先回想刚读过的核心关系，再从标记处继续。",
     )

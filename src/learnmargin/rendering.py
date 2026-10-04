@@ -129,6 +129,8 @@ def build_html(lesson: Lesson, *, layout: str = "a4") -> str:
     environment.filters["mdi"] = lambda value: markdown(value, inline=True, image_label=lesson.text.image)
     return environment.get_template("lesson.html").render(
         lesson=lesson, text=lesson.text, layout=layout, page_width=210 if layout == "a4" else 286,
+        fallback_pause={"minutes": 5, "when": lesson.text.pause_when,
+                        "activity": lesson.text.pause_activity, "resume": lesson.text.pause_resume},
         has_answers=any(section.practice or any(prompt.answer for prompt in section.study_prompts)
                         for section in lesson.sections),
         source_refs=source_refs, katex_css=Markup(css), katex_script=Markup(katex),
@@ -311,6 +313,7 @@ async def render_lesson(lesson: Lesson, output_dir: Path, *, layout: str = "a4")
                   "navigation_only_pages": report["navigation_only_pages"],
                   "orphan_heading_pages": report["orphan_heading_pages"],
                   "pause_only_pages": report["pause_only_pages"],
+                  "pause_positions": report["pause_positions"], "pause_plan": report["pause_plan"],
                   "limitations": "已检查内容保留、分页、公式排版与导航；未验证学科正确性或实际学习效果。"}
     (output_dir / "validation.json").write_text(
         json.dumps(validation, ensure_ascii=False, indent=2), encoding="utf-8"

@@ -122,8 +122,9 @@ async def test_selected_language_reaches_every_writing_stage_and_saved_lesson(wo
     assert len(provider.calls) == 5  # plan + two drafts + two reviews; no translation call
     assert all(language in prompt for _, prompt, _ in provider.calls)
     assert lesson.text.pause_when == localized_plan["text"]["pause_when"]
-    pause = next(item.pause for item in lesson.sections if item.pause)
-    assert pause.resume == localized_plan["text"]["pause_resume"]
+    assert all(item.pause and item.pause.when == localized_plan["text"]["pause_when"]
+               and item.pause.activity == localized_plan["text"]["pause_activity"]
+               and item.pause.resume == localized_plan["text"]["pause_resume"] for item in lesson.sections)
     saved = json.loads((output / "plan.json").read_text(encoding="utf-8"))
     assert saved["text"]["pause_when"] == lesson.text.pause_when
 
@@ -137,14 +138,45 @@ async def test_generation_preserves_scope_sources_and_adds_conditional_rest(work
     assert [source.ref for source in lesson.sources] == [f"{DOC_ID}:1", f"{DOC_ID}:2"]
     assert [item.id for item in lesson.sections] == ["s1", "s2"]
     assert lesson.warnings == ["测试材料警告"]
-    assert len([item for item in lesson.sections if item.pause]) == 1
-    pause = next(item.pause for item in lesson.sections if item.pause)
-    assert pause.minutes == 5 and "若" in pause.when and "25分钟" in pause.when
-    assert pause.resume
+    assert all(item.pause and item.pause.minutes == 5 and "若" in item.pause.when
+               and "25分钟" in item.pause.when and item.pause.resume for item in lesson.sections)
     assert (output / "selection.json").is_file()
     assert (output / "plan.json").is_file()
     assert (output / "section-2.json").is_file()
     assert progress == sorted(progress)
+
+
+@pytest.mark.parametrize("existing", [(), (1,), (2,), (1, 2)])
+async def test_each_section_has_rest_guidance_without_replacing_specific_pause_or_extra_requests(workspace, existing):
+    store, output = workspace
+    planned = plan()
+    sections = [section(1), section(2)]
+    pauses = {}
+    for index in existing:
+        pauses[index] = {
+            "minutes": 5,
+            "when": "若本轮已专注约25分钟，记下当前步骤后休息5分钟。",
+            "activity": "起身走动或喝水。",
+            "resume": f"回到第{index}节刚才标记的位置，先回想已知条件。",
+        }
+        sections[index - 1]["pause"] = pauses[index]
+    expected_prompts = [item["study_prompts"] for item in sections]
+    provider = SequenceProvider([planned, *sections])
+    lesson = await generate_lesson(request(), [document()], store, output, provider, lambda *_: None)
+    assert len(provider.calls) == 5
+    for index, completed in enumerate(lesson.sections, 1):
+        assert completed.pause is not None
+        if index in existing:
+            assert completed.pause.model_dump() == pauses[index]
+        else:
+            assert completed.pause.model_dump() == {
+                "minutes": 5, "when": planned["text"]["pause_when"],
+                "activity": planned["text"]["pause_activity"], "resume": planned["text"]["pause_resume"],
+            }
+        saved = json.loads((output / f"section-{index}.json").read_text(encoding="utf-8"))
+        assert saved["pause"] == completed.pause.model_dump()
+        assert completed.study_prompts[0].task == expected_prompts[index - 1][0]["task"]
+        assert len(completed.study_prompts) == len(expected_prompts[index - 1])
 
 
 async def test_topic_selection_cannot_forge_source_locations(workspace):
