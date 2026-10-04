@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "learnmargin"
+version = "0.1.0"
+description = "Turn course materials into guided PDF study notes."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+  "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "python-multipart>=0.0.20,<1",
+  "pydantic>=2.10,<3", "httpx>=0.28,<1", "pypdf>=5.4,<7", "pypdfium2>=4.30,<6",
+  "python-docx>=1.1,<2", "python-pptx>=1.0,<2", "beautifulsoup4>=4.13,<5",
+  "Pillow>=11,<13", "playwright>=1.51,<2", "jinja2>=3.1.6,<4",
+  "markdown-it-py>=3,<5", "platformdirs>=4,<5"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.26,<2", "ruff>=0.11,<1", "build>=1.2,<2"]
+
+[project.scripts]
+learnmargin = "learnmargin.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/learnmargin"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"skills/learnmargin" = "learnmargin/resources/skill"
+"frontend/dist" = "learnmargin/web"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = ["integration: browser or conversion integration tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
