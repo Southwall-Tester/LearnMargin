@@ -22,6 +22,13 @@ from learnmargin.models import (
 from learnmargin.rendering import RenderError, build_html, markdown, render_lesson
 
 
+def comparable_pdf_text(value: str) -> str:
+    # Noto's duplicate CJK glyphs can use radical code points in ToUnicode.
+    # These two fixture characters have Equivalent_Unified_Ideograph mappings
+    # but no NFKC decomposition: unicode.org/Public/UCD/latest/ucd/EquivalentUnifiedIdeograph.txt
+    return normalize("NFKC", value).translate({0x2ED3: 0x957F, 0x2EDA: 0x9875})
+
+
 def example_lesson(*, long: bool = False, practice: bool = True) -> Lesson:
     explanation = (
         "条件概率先确定已知条件，再在符合条件的对象中计算比例。"
@@ -97,7 +104,7 @@ async def test_render_a4_long_content_navigation_and_answer_isolation(tmp_path: 
     assert "CHECK_SPOILER_SENTINEL" in "".join(page.extract_text() for page in reader.pages[answer_index:])
     # Noto CJK may map visually identical glyphs to compatibility radicals in
     # PDF ToUnicode; compare canonical content without dropping characters.
-    extracted = normalize("NFKC", "".join(page.extract_text() for page in reader.pages))
+    extracted = comparable_pdf_text("".join(page.extract_text() for page in reader.pages))
     assert "D1:1" not in extracted
     assert "$P(B)>0$" not in extracted
     assert "[1] 示例材料" in extracted
@@ -197,7 +204,7 @@ async def test_multiple_materials_show_roles_comparisons_and_human_locations(tmp
     ]
     result = await render_lesson(lesson, tmp_path)
     reader = PdfReader(tmp_path / "lesson.pdf")
-    text = normalize("NFKC", "".join("".join(page.extract_text().split()) for page in reader.pages))
+    text = comparable_pdf_text("".join("".join(page.extract_text().split()) for page in reader.pages))
     assert "资料对照" in text and "主材料通过筛选戴眼镜" in text
     assert normalize("NFKC", "与主材料一致，补充其公式可用条件") in text
     assert "教材补充.pdf" in text and normalize("NFKC", "PDF第3页（印刷第5页）") in text
