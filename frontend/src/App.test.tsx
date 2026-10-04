@@ -60,6 +60,7 @@ describe('workspace generation', () => {
     expect(payload.language).toBe('简体中文');
     expect(payload.reading_mode).toBe('auto');
     expect(payload.scope.ranges.doc1).toBe('1-2,4');
+    expect(payload.scope.include_prerequisites).toBe(true);
     expect(payload.api.model).toBe('deepseek-flash');
     expect(payload.api.api_key).toBe('private-key');
     expect(payload.api).not.toHaveProperty('has_api_key');
@@ -122,6 +123,9 @@ describe('workspace generation', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('至少选择一份主材料');
     fireEvent.change(screen.getByLabelText('教材.pdf 的材料角色'), { target: { value: 'primary' } });
     fireEvent.change(screen.getByLabelText('教材.pdf 的范围'), { target: { value: '2-4' } });
+    const prerequisites = screen.getByRole('checkbox', { name: '回查主材料其他页的必要定义与前提' });
+    expect(prerequisites).toBeChecked();
+    fireEvent.click(prerequisites);
     fireEvent.click(screen.getByRole('button', { name: /deepseek-flash/ }));
     fireEvent.change(screen.getByLabelText(/API Key/), { target: { value: 'private-key' } });
     fireEvent.click(screen.getByRole('button', { name: '生成学习讲义' }));
@@ -129,6 +133,7 @@ describe('workspace generation', () => {
     const payload = JSON.parse(requests.find(item => item.path === '/api/jobs' && item.init?.method === 'POST')!.init!.body as string) as GenerateRequest;
     expect(payload.document_ids).toEqual(['doc1', 'doc2']);
     expect(payload.scope.ranges).toEqual({ doc1: '2-4' });
+    expect(payload.scope.include_prerequisites).toBe(false);
   });
 
   it('requires image understanding for handwritten materials and submits the selected reading mode', async () => {

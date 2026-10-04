@@ -50,6 +50,8 @@ class Scope(Model):
     mode: Literal["all", "pages", "topics"] = "all"
     ranges: dict[str, str] = Field(default_factory=dict)
     topics: str = Field(default="", max_length=2000)
+    include_prerequisites: bool = Field(default=True,
+        description="页码模式允许检索同文件范围外的必要定义、前提和补充解释，作为参考而非新增学习范围。")
 
 
 class GenerateRequest(Model):
@@ -169,6 +171,9 @@ class LessonSection(Model):
     study_prompts: list[StudyPrompt] = Field(default_factory=list, max_length=2)
     pause: Pause | None = None
     study_load: StudyLoad | None = None
+    unresolved_prerequisites: list[str] = Field(default_factory=list, max_length=8,
+        description="仍缺乏依据、导致无法理解本节或验证论证的必要定义或结论；没有则为空数组。"
+        "定义和角色已清楚、仅不知英文全称不算实质缺口。")
 
     @model_validator(mode="after")
     def practice_load_matches_content(self):
@@ -178,9 +183,12 @@ class LessonSection(Model):
 
 
 class GeneratedLessonSection(LessonSection):
-    """New generation requires estimates; saved lessons remain backwards compatible."""
+    """New generation requires explicit author checks; saved lessons remain compatible."""
 
     study_load: StudyLoad
+    unresolved_prerequisites: list[str] = Field(max_length=8,
+        description="仍缺乏依据、导致无法理解本节或验证论证的必要定义或结论；没有则必须返回空数组。"
+        "定义和角色已清楚、仅不知英文全称不算实质缺口。")
 
 
 class SourceCitation(Model):

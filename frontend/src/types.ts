@@ -30,7 +30,7 @@ export type UnitDetail = {
   index: number; label: string; text: string; images: string[];
   transcription?: { text: string; uncertainties: string[] } | null;
 };
-export type Scope = { mode: 'all' | 'pages' | 'topics'; ranges: Record<string, string>; topics: string };
+export type Scope = { mode: 'all' | 'pages' | 'topics'; ranges: Record<string, string>; topics: string; include_prerequisites?: boolean };
 export type GenerateRequest = {
   document_ids: string[];
   scope: Scope;

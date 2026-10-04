@@ -53,6 +53,7 @@ def plan(*, missing=False, invalid=False, duplicate=False):
 
 def section(index, *, reference=None, duplicate_prompt=False):
     return {"id": f"s{index}", "title": "条件概率" if index == 1 else "独立性",
+            "unresolved_prerequisites": [],
             "source_refs": [reference or f"{DOC_ID}:{index}"],
             "explanation": "这里讨论条件如何改变参考范围，以及独立性需要满足什么等式。" * 3,
             "worked_example": "补充例题：从十个对象中选出满足条件的四个，再计算目标比例。" * 2,
@@ -390,11 +391,12 @@ class IntegrationProvider:
         raise AssertionError(f"Unexpected model schema: {schema.__name__}")
 
 
-def multiple_request(*, mode="pages", ranges=None):
+def multiple_request(*, mode="pages", ranges=None, include_prerequisites=True):
     return GenerateRequest(document_ids=[DOC_ID, REFERENCE_ID], section_count=2,
                            api=APIConfig(vision=False), scope=Scope(mode=mode,
                                ranges=ranges if ranges is not None else {DOC_ID: "2"},
-                               topics="条件概率" if mode == "topics" else ""))
+                               topics="条件概率" if mode == "topics" else "",
+                               include_prerequisites=include_prerequisites))
 
 
 def multiple_documents():
@@ -406,17 +408,17 @@ def multiple_documents():
 async def test_page_scope_preserves_main_pages_and_retrieves_unranged_reference(workspace):
     store, output = workspace
     expected = [f"{DOC_ID}:2", f"{REFERENCE_ID}:2"]
-    provider = IntegrationProvider(expected, selections=[[f"{REFERENCE_ID}:2"]])
+    provider = IntegrationProvider(expected, selections=[[], [f"{REFERENCE_ID}:2"]])
     lesson = await generate_lesson(multiple_request(), multiple_documents(), store, output, provider, lambda *_: None)
     assert [source.ref for source in lesson.sources] == expected
     assert [source.role for source in lesson.sources] == ["primary", "reference"]
     assert lesson.text.scope_location_note in lesson.scope_note
     assert [name for name, *_ in provider.calls].count("StudyFocus") == 1
-    assert [name for name, *_ in provider.calls].count("TopicSelection") == 1
+    assert [name for name, *_ in provider.calls].count("TopicSelection") == 2
     focus_prompt = next(user for name, user, _ in provider.calls if name == "StudyFocus")
     assert "条件概率的分母" in focus_prompt
     assert "未选的其他知识" not in focus_prompt
-    reference_prompt = next(user for name, user, _ in provider.calls if name == "TopicSelection")
+    reference_prompt = [user for name, user, _ in provider.calls if name == "TopicSelection"][1]
     assert "把样本空间限制到B" in reference_prompt
     assert all({note.ref.split(":")[0] for note in item.source_notes} == {DOC_ID, REFERENCE_ID}
                for item in lesson.sections)
@@ -427,7 +429,7 @@ async def test_page_scope_preserves_main_pages_and_retrieves_unranged_reference(
 
 async def test_unrelated_reference_is_not_fabricated_or_required_in_plan(workspace):
     store, output = workspace
-    provider = IntegrationProvider([f"{DOC_ID}:2"], selections=[[]])
+    provider = IntegrationProvider([f"{DOC_ID}:2"], selections=[[], []])
     lesson = await generate_lesson(multiple_request(), multiple_documents(), store, output, provider, lambda *_: None)
     assert [source.ref for source in lesson.sources] == [f"{DOC_ID}:2"]
     assert all(source.role == "primary" for source in lesson.sources)
@@ -454,11 +456,12 @@ async def test_pages_reject_empty_or_unselected_primary_ranges(workspace, ranges
     assert not provider.calls
 
 
-async def test_reference_selection_cannot_add_an_unselected_main_page(workspace):
+async def test_reference_selection_cannot_add_an_unselected_main_page_when_prerequisites_disabled(workspace):
     store, output = workspace
     provider = IntegrationProvider([], selections=[[f"{DOC_ID}:1"]])
     with pytest.raises(ValueError, match="位置|引用|范围"):
-        await generate_lesson(multiple_request(), multiple_documents(), store, output, provider, lambda *_: None)
+        await generate_lesson(multiple_request(include_prerequisites=False), multiple_documents(),
+                              store, output, provider, lambda *_: None)
     assert not any(name == "LessonPlan" for name, *_ in provider.calls)
 
 
@@ -486,7 +489,7 @@ async def test_primary_limit_fails_before_any_auxiliary_model_call(workspace, mo
 async def test_a_reference_only_plan_cannot_replace_the_primary_lesson(workspace):
     store, output = workspace
     provider = IntegrationProvider([f"{DOC_ID}:2", f"{REFERENCE_ID}:2"],
-                                   selections=[[f"{REFERENCE_ID}:2"]], reference_only_plan=True)
+                                   selections=[[], [f"{REFERENCE_ID}:2"]], reference_only_plan=True)
     with pytest.raises(ValueError, match="计划|主资料"):
         await generate_lesson(multiple_request(), multiple_documents(), store, output, provider, lambda *_: None)
     assert [name for name, *_ in provider.calls].count("LessonPlan") == 3
@@ -497,7 +500,7 @@ async def test_a_reference_only_plan_cannot_replace_the_primary_lesson(workspace
 async def test_multiple_material_explanations_require_real_per_file_notes(workspace, fault):
     store, output = workspace
     provider = IntegrationProvider([f"{DOC_ID}:2", f"{REFERENCE_ID}:2"],
-                                   selections=[[f"{REFERENCE_ID}:2"]], **{fault: True})
+                                   selections=[[], [f"{REFERENCE_ID}:2"]], **{fault: True})
     with pytest.raises(ExceptionGroup) as caught:
         await generate_lesson(multiple_request(), multiple_documents(), store, output, provider, lambda *_: None)
     assert any(isinstance(error, ValueError) for error in caught.value.exceptions)
@@ -572,3 +575,152 @@ async def test_review_cannot_change_approved_section_identity_or_reference(works
         await generate_lesson(request(), [document()], store, output, provider, lambda *_: None)
     assert any(isinstance(error, ValueError) and "计划" in str(error) for error in caught.value.exceptions)
     assert not (output / "section-1.json").exists()
+
+
+async def test_same_document_prerequisite_reaches_plan_draft_and_review_as_reference(workspace):
+    store, output = workspace
+    sources = [source_document(DOC_ID, "学习材料.md", [
+        "前置定义：条件概率是限制到已知事件后的比例，要求已知事件的概率非零。",
+        "主学习范围：用此前定义的条件概率检验独立性。",
+        "后续新课：随机变量的分布函数，与本节不构成依赖。",
+    ])]
+    expected = [f"{DOC_ID}:2", f"{DOC_ID}:1"]
+    provider = IntegrationProvider(expected, selections=[[f"{DOC_ID}:1"]])
+    parameters = request(scope=Scope(mode="pages", ranges={DOC_ID: "2"}))
+    lesson = await generate_lesson(parameters, sources, store, output, provider, lambda *_: None)
+    assert [(item.ref, item.role) for item in lesson.sources] == [(expected[0], "primary"),
+                                                              (expected[1], "reference")]
+    assert len(provider.calls) == 7  # focus, selection, plan, two drafts and two reviews
+    for schema, prompt, _ in provider.calls:
+        if schema in {"LessonPlan", "GeneratedLessonSection"}:
+            assert sources[0].units[0].text in prompt
+            assert sources[0].units[1].text in prompt
+            assert sources[0].units[2].text not in prompt
+    selection_prompt = next(prompt for schema, prompt, _ in provider.calls if schema == "TopicSelection")
+    assert "不能仅因同主题就选择后续应用" in selection_prompt
+    evidence = json.loads((output / "scope-reasoning.json").read_text(encoding="utf-8"))
+    assert evidence["include_prerequisites"] is True
+    assert evidence["primary_refs"] == [expected[0]]
+    assert evidence["batches"][0]["purpose"] == "prerequisite"
+    assert evidence["batches"][0]["examined_refs"] == [f"{DOC_ID}:1", f"{DOC_ID}:3"]
+
+
+async def test_strict_page_scope_never_reads_same_document_outside_range(workspace):
+    store, output = workspace
+    main = source_document(DOC_ID, "主材料.md", ["范围外的私有说明，不允许读取。", "主学习内容：条件概率。"])
+    selected = [f"{DOC_ID}:2"]
+    provider = IntegrationProvider(selected)
+    lesson = await generate_lesson(request(scope=Scope(mode="pages", ranges={DOC_ID: "2"},
+        include_prerequisites=False)), [main], store, output, provider, lambda *_: None)
+    assert len(provider.calls) == 5
+    assert all(main.units[0].text not in prompt for _, prompt, _ in provider.calls)
+    assert [item.ref for item in lesson.sources] == selected
+
+
+async def test_primary_pages_stay_complete_with_both_same_file_and_external_references(workspace):
+    store, output = workspace
+    sources = multiple_documents()
+    expected = [f"{DOC_ID}:2", f"{DOC_ID}:1", f"{REFERENCE_ID}:2"]
+    provider = IntegrationProvider(expected, selections=[[f"{DOC_ID}:1"], [f"{REFERENCE_ID}:2"]])
+    lesson = await generate_lesson(multiple_request(), sources, store, output, provider, lambda *_: None)
+    assert [item.ref for item in lesson.sources] == expected
+    assert [item.role for item in lesson.sources] == ["primary", "reference", "reference"]
+    assert all(f"{DOC_ID}:2" in item.source_refs for item in lesson.sections)
+
+
+async def test_page_search_only_transcribes_selected_scan_references_and_keeps_primary_record(workspace):
+    store, output = workspace
+    main = source_document(DOC_ID, "扫描材料.pdf", ["", "", ""])
+    folder = store.directory("documents", DOC_ID)
+    folder.mkdir()
+    for unit in main.units:
+        unit.image_paths = [f"page-{unit.index}.png"]
+        (folder / unit.image_paths[0]).write_bytes(b"in-process test image")
+    expected = [f"{DOC_ID}:2", f"{DOC_ID}:1"]
+
+    class ScanProvider(IntegrationProvider):
+        async def generate(self, schema, system, user, images=None):
+            if schema.__name__ == "PageTranscription":
+                self.calls.append((schema.__name__, user, images))
+                ref = json.loads(user.split("单元信息：", 1)[1])[0]["ref"]
+                return schema(text=f"已转录 {ref}：必要定义及适用前提，供正文解释时核对。" * 2,
+                              uncertainties=["定义中的字母有疑点"] if ref.endswith(":1") else [])
+            return await super().generate(schema, system, user, images)
+
+    provider = ScanProvider(expected, selections=[[f"{DOC_ID}:1"]])
+    parameters = GenerateRequest(document_ids=[DOC_ID], section_count=2, api=APIConfig(vision=True),
+                                 scope=Scope(mode="pages", ranges={DOC_ID: "2"}))
+    lesson = await generate_lesson(parameters, [main], store, output, provider, lambda *_: None)
+    ocr_calls = [call for call in provider.calls if call[0] == "PageTranscription"]
+    assert [images[0].name for _, _, images in ocr_calls] == ["page-2.png", "page-1.png"]
+    records = json.loads((output / "transcription.json").read_text(encoding="utf-8"))["units"]
+    assert [record["ref"] for record in records] == expected
+    assert records[1]["uncertainties"] == ["定义中的字母有疑点"]
+    assert any("识读疑点" in warning for warning in lesson.warnings)
+    for schema, prompt, _ in provider.calls:
+        if schema in {"LessonPlan", "GeneratedLessonSection"}:
+            assert "[待核对：识读疑点]" in prompt
+            assert f"已转录 {DOC_ID}:1" in prompt
+            assert f"已转录 {DOC_ID}:2" in prompt
+
+
+@pytest.mark.parametrize("texts", [["足够长的独立内容。" * 4] * 301, ["字" * 20, "字" * 400_001]])
+async def test_prerequisite_candidate_limit_stops_before_any_paid_request(workspace, texts):
+    store, output = workspace
+    source = source_document(DOC_ID, "过长材料.md", texts)
+    provider = SequenceProvider([])
+    with pytest.raises(ValueError, match="关闭同文件前置知识检索") as caught:
+        await generate_lesson(request(scope=Scope(mode="pages", ranges={DOC_ID: "1"})),
+                              [source], store, output, provider, lambda *_: None)
+    assert "仅缩小页码范围不会减少" in str(caught.value)
+    assert not provider.calls
+
+
+async def test_review_can_resolve_draft_prerequisite_gap_without_extra_model_requests(workspace):
+    store, output = workspace
+    drafts = [section(1), section(2)]
+    for draft in drafts:
+        draft["unresolved_prerequisites"] = ["待从参考页补足条件概率的定义。"]
+
+    def revise(draft):
+        draft["unresolved_prerequisites"] = []
+        return draft
+
+    provider = SequenceProvider([plan(), *drafts], revise=revise)
+    lesson = await generate_lesson(request(), [document()], store, output, provider, lambda *_: None)
+    assert len(provider.calls) == 5
+    assert all(item.unresolved_prerequisites == [] for item in lesson.sections)
+    assert json.loads((output / "section-1.json").read_text(encoding="utf-8"))["unresolved_prerequisites"] == []
+
+
+async def test_unresolved_prerequisite_after_review_blocks_delivery_and_saves_diagnosis(workspace):
+    store, output = workspace
+    gap = "本节推理依赖事件B的完整定义，所给资料没有该定义。"
+
+    def revise(draft):
+        draft["unresolved_prerequisites"] = [gap]
+        return draft
+
+    provider = SequenceProvider([plan(), section(1), section(2)], revise=revise)
+    with pytest.raises(ExceptionGroup) as caught:
+        await generate_lesson(request(), [document()], store, output, provider, lambda *_: None)
+    assert any(isinstance(error, ValueError) and gap in str(error) for error in caught.value.exceptions)
+    assert not (output / "section-1.json").exists()
+    diagnosis = json.loads((output / "section-1-prerequisites.json").read_text(encoding="utf-8"))
+    assert diagnosis["unresolved_prerequisites"] == [gap]
+    assert diagnosis["reviewed_section"]["source_refs"] == [f"{DOC_ID}:1"]
+    state = json.loads((output / "section-1-status.json").read_text(encoding="utf-8"))
+    assert state["stage"] == "审校" and state["status"] == "failed"
+
+
+def test_generated_sections_require_explicit_prerequisite_check_but_legacy_sections_load():
+    from pydantic import ValidationError
+
+    from learnmargin.models import GeneratedLessonSection, LessonSection
+
+    legacy = section(1)
+    legacy.pop("unresolved_prerequisites")
+    assert LessonSection.model_validate(legacy).unresolved_prerequisites == []
+    with pytest.raises(ValidationError) as caught:
+        GeneratedLessonSection.model_validate(legacy)
+    assert caught.value.errors()[0]["loc"] == ("unresolved_prerequisites",)

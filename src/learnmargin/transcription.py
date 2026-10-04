@@ -1,6 +1,8 @@
 """Source-bound multimodal transcription, retaining uncertainty and original pages."""
 from __future__ import annotations
 
+import json
+
 from pydantic import Field
 
 from .models import Model
@@ -14,7 +16,7 @@ class PageTranscription(Model):
                                      description="模糊字符、公式结构、涂改、阅读顺序等需要对照原页的具体疑点。")
 
 
-async def transcribe_sources(units, store, output, provider, *, vision, reading_mode, progress):
+async def transcribe_sources(units, store, output, provider, *, vision, reading_mode, progress, append=False):
     # Import locally to avoid a circular dependency with pipeline's shared image loader.
     from .pipeline import source_content
 
@@ -42,7 +44,12 @@ async def transcribe_sources(units, store, output, provider, *, vision, reading_
                         "text": transcription.text, "uncertainties": transcription.uncertainties})
         if transcription.uncertainties:
             warnings.append(f"《{document.name}》{unit.label}有 {len(transcription.uncertainties)} 处识读疑点，请对照原页核对。")
-    atomic_json(output / "transcription.json", {"mode": reading_mode, "units": records})
+    path = output / "transcription.json"
+    if append and path.exists():
+        previous = json.loads(path.read_text(encoding="utf-8"))["units"]
+        updated_refs = {record["ref"] for record in records}
+        records = [record for record in previous if record["ref"] not in updated_refs] + records
+    atomic_json(path, {"mode": reading_mode, "units": records})
     if records:
         warnings.insert(0, "手写或扫描内容经多模态识读；原页、识读文本与疑点可在网页来源中对照。")
     return result, warnings
