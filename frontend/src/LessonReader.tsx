@@ -123,7 +123,7 @@ export default function LessonReader({ job }: { job: Job }) {
 
     <dialog ref={dialog} className="source-dialog" aria-labelledby="source-dialog-title" onCancel={event => { event.preventDefault(); returnToLesson(); }} onClick={event => { if (event.target === event.currentTarget) returnToLesson(); }}>
       <div className="source-dialog-inner">
-        <header><div><span className="eyebrow">SOURCE MATERIAL</span><h2 id="source-dialog-title">{source?.document?.name || '原材料'}</h2>{source?.unit && <p>{source.unit.label}</p>}</div><button className="icon-button" aria-label="返回讲义" onClick={returnToLesson} autoFocus><X size={20} /></button></header>
+        <header><div><h2 id="source-dialog-title">{source?.document?.name || '原材料'}</h2>{source?.unit && <p>{source.unit.label}</p>}</div><button className="icon-button" aria-label="返回讲义" onClick={returnToLesson} autoFocus><X size={20} /></button></header>
         <div className="source-dialog-content" aria-busy={source?.loading}>
           {source?.loading ? <div className="preview-loading"><LoaderCircle className="spin" size={24} />正在打开原材料</div> : source?.error ? <div className="source-unavailable" role="status"><FileText size={30} /><p>{source.error}</p></div> : <>
             {source?.unit?.transcription && <section><h3><BookOpen size={15} />识读结果</h3><pre>{source.unit.transcription.text}</pre>{source.unit.transcription.uncertainties.length > 0 && <div className="transcription-uncertainties"><h4>待核对处</h4><ul>{source.unit.transcription.uncertainties.map((uncertainty, index) => <li key={index}>{uncertainty}</li>)}</ul></div>}</section>}
