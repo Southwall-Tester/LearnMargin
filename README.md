@@ -15,6 +15,8 @@ LearnMargin 提供两个独立产品，共用按《学习之道》18 章整理�
 
 只有 AI 订阅、没有 API 的使用者，直接选择 Skill。Skill 不依赖安装软件或启动本地服务；软件也不要求用户先在 AI 客户端安装 Skill。两者可在同一仓库维护，但分别交付 `learnmargin-skill.zip` 与 Python 软件包。
 
+软件包与独立 Skill 包可从 [GitHub Releases](https://github.com/Southwall-Tester/LearnMargin/releases/latest) 下载；版本变化见 [更新记录](CHANGELOG.md)。
+
 ## 直接使用 Skill
 
 取得整个 [`skills/learnmargin/`](skills/learnmargin) 文件夹或 `learnmargin-skill.zip`，交给能够读取附件并生成文件的 AI 会话。支持技能目录的客户端也可按其规则安装该文件夹；不支持原生技能安装时，提供整个包并要求读取 `SKILL.md` 和相关参考文件即可。
