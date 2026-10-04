@@ -1,3 +1,10 @@
+export class ApiError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response;
   try {
@@ -13,7 +20,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
       if (typeof body.detail === 'string') message = body.detail;
       else if (Array.isArray(body.detail)) message = '请求内容不符合要求，请检查学习范围和模型设置。';
     } catch { /* The server may return a non-JSON error page. */ }
-    throw new Error(message);
+    throw new ApiError(response.status, message);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;

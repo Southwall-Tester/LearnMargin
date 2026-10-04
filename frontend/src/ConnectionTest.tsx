@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, LoaderCircle, PlugZap, TriangleAlert } from 'lucide-react';
-import { request } from './api';
+import { ApiError, request } from './api';
 import { configError } from './domain';
 import type { APIConfig } from './types';
 
@@ -40,7 +40,9 @@ export default function ConnectionTest({ config }: { config: APIConfig }) {
       if (pending.current !== controller) return;
       let message = controller.signal.aborted ? '连接测试超时，请检查服务地址和网络后重试。'
         : error instanceof Error ? error.message : '连接测试失败，请重试。';
-      if (message === 'Not Found') message = '请重新启动 LearnMargin，以载入连接测试功能。';
+      if (error instanceof ApiError && [404, 405].includes(error.status)) {
+        message = '当前本地服务未加载连接测试功能，请重启 LearnMargin 后重试。';
+      }
       setStatus({ kind: 'error', message });
     } finally {
       clearTimeout(timer);

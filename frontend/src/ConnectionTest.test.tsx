@@ -29,6 +29,34 @@ describe('connection test', () => {
     expect(screen.getByRole('button', { name: '测试连接' })).toBeEnabled();
   });
 
+  it.each([
+    [404, 'Not Found'],
+    [405, 'Method Not Allowed'],
+    [405, null],
+  ])('explains a missing local endpoint with HTTP %s, including non-JSON responses', async (status, detail) => {
+    const fetch = vi.fn().mockResolvedValue({
+      ok: false, status,
+      json: detail ? async () => ({ detail }) : async () => { throw new SyntaxError('HTML error page'); },
+    } as Response);
+    vi.stubGlobal('fetch', fetch);
+    render(<ConnectionTest config={config} />);
+    fireEvent.click(screen.getByRole('button', { name: '测试连接' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('当前本地服务未加载连接测试功能，请重启 LearnMargin 后重试。');
+    expect(screen.queryByText(/Method Not Allowed|Not Found/)).not.toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: '测试连接' })).toBeEnabled();
+  });
+
+  it('keeps an upstream protocol error separate from a missing local endpoint', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({
+      detail: 'API 返回 HTTP 405。请核对服务地址、协议、模型名与 JSON 模式。',
+    }, false)));
+    render(<ConnectionTest config={config} />);
+    fireEvent.click(screen.getByRole('button', { name: '测试连接' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('API 返回 HTTP 405');
+    expect(screen.getByRole('status')).not.toHaveTextContent('重启');
+  });
+
   it('ignores stale results after settings change and clears previous success', async () => {
     let finish!: (value: Response) => void;
     const fetch = vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve; }))
