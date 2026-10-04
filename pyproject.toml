@@ -11,10 +11,10 @@ requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
   "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "python-multipart>=0.0.20,<1",
-  "pydantic>=2.10,<3", "httpx>=0.28,<1", "pypdf>=5.4,<7", "pypdfium2>=4.30,<6",
+  "pydantic>=2.10,<3", "httpx>=0.28,<1", "pypdf>=6.19,<7", "pypdfium2>=4.30,<6",
   "python-docx>=1.1,<2", "python-pptx>=1.0,<2", "beautifulsoup4>=4.13,<5",
   "Pillow>=11,<13", "playwright>=1.51,<2", "jinja2>=3.1.6,<4",
-  "markdown-it-py>=3,<5", "platformdirs>=4,<5"
+  "markdown-it-py>=3,<5", "platformdirs>=4,<5", "python-dotenv>=1.1,<2"
 ]
 
 [project.optional-dependencies]
@@ -30,6 +30,11 @@ packages = ["src/learnmargin"]
 "skills/learnmargin" = "learnmargin/resources/skill"
 "frontend/dist" = "learnmargin/web"
 
+[tool.hatch.build.targets.sdist.force-include]
+# A wheel built from the source distribution must not need Node/npm or the
+# original checkout to recover its already compiled browser application.
+"frontend/dist" = "frontend/dist"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
@@ -41,4 +46,3 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
-

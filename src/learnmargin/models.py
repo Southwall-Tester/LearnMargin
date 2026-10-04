@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 
 class Model(BaseModel):
@@ -28,8 +28,8 @@ class Document(Model):
 
 class APIConfig(Model):
     protocol: Literal["responses", "chat_completions"] = "chat_completions"
-    base_url: str = "https://api.openai.com/v1"
-    model: str = ""
+    base_url: str = "https://api.deepseek.com"
+    model: str = "deepseek-flash"
     api_key: SecretStr = Field(default_factory=lambda: SecretStr(""))
     vision: bool = True
     json_mode: bool = True
@@ -49,6 +49,8 @@ class GenerateRequest(Model):
     learner_notes: str = Field(default="", max_length=2000)
     language: str = Field(default="简体中文", max_length=80)
     section_count: int = Field(default=4, ge=2, le=8)
+    layout: Literal["a4", "wide"] = "a4"
+    reading_mode: Literal["auto", "handwritten"] = "auto"
 
 
 class Concept(Model):
@@ -82,9 +84,17 @@ class LessonPlan(Model):
 
 class StudyPrompt(Model):
     id: str
+    kind: Literal["question", "action"] = Field(description="需要作答、解释或计算用question并提供answer；纯操作提示用action。")
     when: str
     task: str
     check: str
+    answer: str | None = None
+
+    @model_validator(mode="after")
+    def question_has_answer(self):
+        if self.kind == "question" and (self.answer is None or not self.answer.strip()):
+            raise ValueError("需要作答的侧栏提示必须提供参考答案。")
+        return self
 
 
 class Practice(Model):
@@ -101,14 +111,21 @@ class Pause(Model):
     resume: str
 
 
+class SourceNote(Model):
+    ref: str
+    explanation: str = Field(min_length=1, description="这份材料如何解释该知识点，忠实转述，不编引文。")
+    relation: str = Field(min_length=1, description="与主材料或其他资料的互补、条件或差异；一致时如实说明。")
+
+
 class LessonSection(Model):
     id: str
     title: str
     source_refs: list[str] = Field(min_length=1)
+    source_notes: list[SourceNote] = Field(default_factory=list)
     explanation: str = Field(min_length=40)
     worked_example: str = Field(min_length=20)
-    practice: list[Practice] = Field(min_length=1, max_length=4)
-    study_prompts: list[StudyPrompt] = Field(min_length=1, max_length=3)
+    practice: list[Practice] = Field(default_factory=list, max_length=2)
+    study_prompts: list[StudyPrompt] = Field(default_factory=list, max_length=2)
     pause: Pause | None = None
 
 
@@ -116,6 +133,7 @@ class SourceCitation(Model):
     ref: str
     document: str
     label: str
+    role: Literal["primary", "reference", "topic"] = "primary"
 
 
 class Lesson(Model):
@@ -128,4 +146,3 @@ class Lesson(Model):
     sources: list[SourceCitation]
     scope_note: str
     warnings: list[str] = Field(default_factory=list)
-

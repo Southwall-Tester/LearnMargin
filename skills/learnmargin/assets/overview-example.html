@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>学习总览：从前束范式到自然推理</title>
+<style>
+@page {size:816.0623231422244pt 841.9199829101562pt;margin:0}
+*{box-sizing:border-box}html,body{margin:0;padding:0}
+body{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;color:#243248;font-size:10pt;line-height:1.57}
+.sheet{position:relative;width:816.0623231422244pt;height:841.9199829101562pt;display:grid;grid-template-columns:594.9599609375pt 221.10236220472441pt}
+main{padding:38pt 45pt 42pt}
+.kicker{font-size:8.5pt;color:#536e89;border-bottom:.7pt solid #b8c8d9;padding-bottom:7pt;margin-bottom:13pt}
+.kicker span{float:right}h1{font-size:21pt;color:#18364f;line-height:1.33;margin:0 0 11pt}
+.lead{font-size:10.5pt;line-height:1.7;margin:0 0 12pt}
+h2{font-size:12pt;color:#155e75;margin:13pt 0 7pt;line-height:1.4}p{margin:6pt 0}
+.map{display:grid;grid-template-columns:1fr 1fr;gap:8pt;margin:8pt 0}
+.node{background:#f2f6fa;border:1px solid #d6e3ec;border-radius:5pt;padding:10pt 11pt}
+.node b{display:block;color:#174b62;font-size:10.5pt;margin-bottom:4pt}.node small{display:block;color:#566c7d;font-size:9pt;margin-top:4pt}
+.bridge{background:#edf7f7;border-left:2.5pt solid #18788b;padding:8pt 10pt;font-size:9.2pt}
+table{border-collapse:collapse;width:100%;font-size:9.2pt;line-height:1.52;margin:8pt 0}
+th,td{border:.6pt solid #d6dfe8;padding:6pt 7pt;text-align:left;vertical-align:top}th{background:#e9f0f6;color:#203d57}
+.eq{font-family:"Cambria Math","Microsoft YaHei",serif}
+.summary{background:#f2f5fa;border-radius:4pt;padding:8pt 11pt;margin-top:7pt}
+.summary p{margin:3pt 0}.meta{font-size:8pt;color:#617386;margin-top:11pt;line-height:1.6}
+aside{position:relative;background:#f3f8fa;border-left:1pt solid #c5dce4;padding:38pt 15pt 45pt;color:#294457;font-size:9.4pt;line-height:1.65}
+.aside-head{display:flex;align-items:center;justify-content:space-between;border-bottom:1pt solid #bdd6df;padding-bottom:8pt;color:#145b70;margin-bottom:19pt}.aside-head b{font-size:14pt;letter-spacing:1pt}.aside-head small{font-size:8pt;color:#617c8d}
+.tag{font-size:8.2pt;color:#50788b;font-weight:bold}.card{padding:11pt;background:#fff;border:.6pt solid #d1e1e8;border-radius:5pt;margin-top:17pt}.card h3{font-size:10.6pt;color:#174b62;margin:5pt 0 7pt;line-height:1.5}.card p{margin:6pt 0}.label{font-size:7.8pt;color:#5c7c8a}
+.aside-foot{position:absolute;bottom:51pt;left:15pt;right:15pt;border-top:.7pt solid #bfd7df;padding-top:10pt;font-size:8.2pt;color:#597383}
+.folio{position:absolute;bottom:21pt;text-align:center;font-size:7.2pt;color:#7b909d}.main-folio{left:45pt;width:505pt}.side-folio{left:610pt;right:15pt}
+</style>
+<div class="sheet">
+<main>
+<div class="kicker">谓词逻辑 · 学习总览<span>先看全局 / 00</span></div>
+<h1>先建立地图，再进入细节</h1>
+<p class="lead">这部分学习的核心，是正确处理“所有”“存在”以及它们之间的关系。你将学会两类操作：<b>把公式等价地整理成统一形式</b>，以及<b>根据带量词的前提证明结论</b>。两者都要求跟踪变量由谁约束、对象怎样选取。</p>
+<h2>一张地图：四个部分各自解决什么问题</h2>
+<div class="map">
+<div class="node"><b>① 前束范式 · 整理表达</b>把量词集中在最前面，母式不含量词，公式含义保持不变。<small>主要操作：去箭头 → 推否定 → 改名 → 外提。正文 1～4 页。</small></div>
+<div class="node"><b>② 有效结论 · 确定证明标准</b>只要前提全真，结论就不能为假；反例要让前提全真而结论假。<small>用直接推导、逆否或反证组织证明。正文 5 页。</small></div>
+<div class="node"><b>③ 量词规则 · 连接一般与个体</b>US、ES 让我们讨论对象；EG、UG 把满足条件的结果推广成量化结论。<small>核心限制：代入合法、见证新鲜、推广有任意性。正文 6～9 页。</small></div>
+<div class="node"><b>④ 完整推理 · 组合规则</b>选择对象 → 进行命题逻辑推理 → 得到目标结论，同时检查量词顺序与见证依赖。<small>比较错例、修复证明，并独立自测。正文 10～12 页。</small></div>
+</div>
+<div class="bridge"><b>怎样衔接：</b>前束化帮助你看清量词与辖域；有效性规定“怎样才算推对”；量词规则与命题规则一起构成证明。自然推理并不要求先把每个前提都化成前束范式。</div>
+<h2>先记住轮廓：四条规则的职责</h2>
+<table><tr><th style="width:16%">规则</th><th style="width:41%">直观作用</th><th>最需要检查的条件</th></tr>
+<tr><td>US</td><td>所有对象成立 → 指定一个也成立</td><td>代入不能导致变量捕获。</td></tr>
+<tr><td>ES</td><td>有对象成立 → 给见证一个新名字</td><td>新见证的范围与依赖必须保留。</td></tr>
+<tr><td>EG</td><td>已有一个实例 → 至少存在一个</td><td>替换及新量词的辖域要合法。</td></tr>
+<tr><td>UG</td><td>对任意对象均已证明 → 全体成立</td><td>不能依赖该对象的特殊假设。</td></tr></table>
+<h2>贯穿全篇的三个区别</h2>
+<div class="summary">
+<p><b>等价与推出：</b>前束化要求双向等价；证明中的一步可以只是单向推出。</p>
+<p><b>外提与合并：</b>“且”不自动阻止量词外提；两个存在命题也不保证共用见证。</p>
+<p><b>各自存在与共同存在：</b><span class="eq">∀x∃y</span> 允许 y 随 x 改变；<span class="eq">∃y∀x</span> 要求同一个 y 适合全部 x。</p>
+</div>
+<p class="meta"><b>页码导航：</b>后续“第几页”均指正文原页码 1～12，本总览不占正文编号；PDF 阅读器页序 = 正文页码 + 1。原课件标注 49～63 页对应其 PDF 文件 47～60 页。本页为基于课件与讲义整理的内容总览。</p>
+</main>
+<aside>
+<div class="aside-head"><b>怎么学这一段</b><small>试用版 03</small></div>
+<div class="tag">第一次先看这页</div>
+<p>先沿左边四块认识整体关系。此时不需要记牢全部符号，也不要求先答出尚未学过的问题。</p>
+<div class="card"><div class="label">学习顺序 · 按理解推进</div><h3>从三个小阶段开始</h3><p><b>A｜正文 1～4 页</b><br>先会前束化，解释为什么需要改名、何时可以外提。</p><p><b>B｜正文 5～9 页</b><br>理解有效结论，逐条学习量词规则。可拆成多次学习。</p><p><b>C｜正文 10～12 页</b><br>组合规则完成证明，再做混合自测。</p></div>
+<div class="card"><div class="label">每一小节 · 一轮学习</div><h3>理解 → 提取 → 核对</h3><p>先读解释和例题，逐行理解理由；再按旁边的提示停下来回想、重做或举反例。</p><p>做完再核对。建议专注约25分钟后休息5分钟。若计时先到，记下卡点即可暂停，不必硬撑到指定休息页。</p></div>
+<div class="card"><div class="label">学过之后 · 回到地图</div><h3>看看能否把它串起来</h3><p>学完一个阶段，再回到本页指出它在整段内容中的位置。</p><p>最后尝试解释：整理公式与证明结论有什么不同？四条规则怎样配合？</p></div>
+<div class="aside-foot">方法依据：《学习之道》第 4 章强调先形成整体认识，再通过理解与练习构建组块；后续侧栏结合第 6、7、18 章的番茄工作法、回想与间隔练习；本讲义建议短休息5分钟，可按实际情况调整。</div>
+</aside>
+<div class="folio main-folio">PRED · 学习总览 / 00</div><div class="folio side-folio">先看全局，再读正文</div>
+</div>
+</html>
