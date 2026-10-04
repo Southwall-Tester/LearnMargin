@@ -1,4 +1,5 @@
 """The optional standalone skill renderer uses its own document dependencies."""
+import argparse
 import asyncio
 import importlib.util
 import json
@@ -18,6 +19,17 @@ spec.loader.exec_module(sidebars)
 def card(card_id, **kwargs):
     return {"id": card_id, "anchor_y_pt": 210, "label": "Read then try", "title": "Sum",
             "body": ["Find the sum of 2 and 3."], **kwargs}
+
+
+@pytest.mark.parametrize("value,expected", [(0, 0), ("0.25", 0.25), (1.25, 1.25), ("4", 4)])
+def test_navigation_zoom_accepts_reading_scale_or_preserving_current_zoom(value, expected):
+    assert sidebars.parse_navigation_zoom(value) == expected
+
+
+@pytest.mark.parametrize("value", [-1, 0.1, 4.1, "nan", "inf", "-inf", "text", None, True])
+def test_navigation_zoom_rejects_invalid_values_before_rendering(value):
+    with pytest.raises(argparse.ArgumentTypeError, match="navigation zoom must be 0"):
+        asyncio.run(sidebars.build(Namespace(navigation_zoom=value)))
 
 
 @pytest.mark.parametrize("value", [None, "", "  ", [], [" "]])
@@ -79,9 +91,11 @@ def write_fixture(directory, *, questions):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("questions,answer_paragraphs", [(True, 1), (True, 20), (False, 0)])
-def test_standalone_pdf_answers_and_exact_return_targets(tmp_path, questions, answer_paragraphs):
+@pytest.mark.parametrize("questions,answer_paragraphs,navigation_zoom", [(True, 1, None), (True, 20, 0), (True, 1, 1.3333333333), (False, 0, None)])
+def test_standalone_pdf_answers_and_exact_return_targets(tmp_path, questions, answer_paragraphs, navigation_zoom):
     args = write_fixture(tmp_path, questions=questions)
+    if navigation_zoom is not None:
+        args.navigation_zoom = navigation_zoom
     if answer_paragraphs > 1:
         notes = json.loads(args.notes.read_text(encoding="utf-8"))
         for page in notes["pages"]:
@@ -89,6 +103,8 @@ def test_standalone_pdf_answers_and_exact_return_targets(tmp_path, questions, an
         args.notes.write_text(json.dumps(notes, ensure_ascii=False), encoding="utf-8")
     asyncio.run(sidebars.build(args))
     report = json.loads(args.report.read_text(encoding="utf-8"))
+    expected_zoom = 1.25 if navigation_zoom is None else navigation_zoom
+    assert report["navigation_zoom"] == expected_zoom
     assert len(report["source_preservation"]) == 2
     assert len(report["internal_links_preserved"]) == 1
     with fitz.open(args.output) as pdf:
@@ -103,6 +119,17 @@ def test_standalone_pdf_answers_and_exact_return_targets(tmp_path, questions, an
                 assert f"ANSWER_{index}: 5." in after
                 assert f"CHECK_{index}" in after
             for pair in report["sidebar_navigation"]:
+                for direction in ("forward", "return"):
+                    expected = pair[direction]
+                    assert expected["zoom"] == expected_zoom
+                    links = pdf[expected["source_pdf_page"] - 1].get_links()
+                    actual = next(link for link in links if link.get("page") == expected["target_pdf_page"] - 1
+                                  and max(abs(a - b) for a, b in zip(link["from"], expected["from"])) < 0.1)
+                    # Read the serialized destination: get_links()['zoom'] may
+                    # incorrectly return 0 in some MuPDF versions.
+                    kind, destination = pdf.xref_get_key(actual["xref"], "A/D")
+                    assert kind == "array" and "/XYZ" in destination
+                    assert float(destination.rstrip("] ").split()[-1]) == pytest.approx(expected_zoom)
                 returned = pair["return"]
                 assert returned["target_pdf_page"] == pair["forward"]["source_pdf_page"]
                 assert returned["to"][0] > 595  # Original sidebar, rather than the page/section start.

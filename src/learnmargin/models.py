@@ -3,7 +3,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic_core import PydanticCustomError
+
+from .localization import LessonText, chinese_lesson_text
 
 
 class Model(BaseModel):
@@ -36,6 +39,13 @@ class APIConfig(Model):
     timeout_seconds: int = Field(default=180, ge=10, le=600)
 
 
+class ConnectionTestResult(Model):
+    ok: Literal[True] = True
+    message: Literal["连接成功"] = "连接成功"
+    model: str
+    latency_ms: int = Field(ge=0)
+
+
 class Scope(Model):
     mode: Literal["all", "pages", "topics"] = "all"
     ranges: dict[str, str] = Field(default_factory=dict)
@@ -47,10 +57,17 @@ class GenerateRequest(Model):
     scope: Scope = Field(default_factory=Scope)
     api: APIConfig = Field(default_factory=APIConfig)
     learner_notes: str = Field(default="", max_length=2000)
-    language: str = Field(default="简体中文", max_length=80)
+    language: str = Field(default="简体中文", min_length=1, max_length=80)
     section_count: int = Field(default=4, ge=2, le=8)
     layout: Literal["a4", "wide"] = "a4"
     reading_mode: Literal["auto", "handwritten"] = "auto"
+
+    @field_validator("language")
+    @classmethod
+    def language_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("请填写输出语言。")
+        return value.strip()
 
 
 class Concept(Model):
@@ -76,6 +93,7 @@ class PlannedSection(Model):
 class LessonPlan(Model):
     title: str
     subtitle: str
+    text: LessonText
     overview: Overview
     sections: list[PlannedSection] = Field(min_length=2, max_length=8)
     review_plan: list[str] = Field(min_length=1, max_length=8)
@@ -96,7 +114,7 @@ class StudyPrompt(Model):
     @model_validator(mode="after")
     def question_has_answer(self):
         if self.kind == "question" and (self.answer is None or not self.answer.strip()):
-            raise ValueError("需要作答的侧栏提示必须提供参考答案。")
+            raise PydanticCustomError("question_answer_required", "需要作答的侧栏提示必须提供参考答案。")
         return self
 
 
@@ -142,6 +160,8 @@ class SourceCitation(Model):
 class Lesson(Model):
     title: str
     subtitle: str
+    language: str = "简体中文"
+    text: LessonText = Field(default_factory=chinese_lesson_text)
     overview: Overview
     sections: list[LessonSection]
     review_plan: list[str]

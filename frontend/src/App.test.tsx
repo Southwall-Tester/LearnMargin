@@ -57,6 +57,7 @@ describe('workspace generation', () => {
     await waitFor(() => expect(requests.some(item => item.path === '/api/jobs' && item.init?.method === 'POST')).toBe(true));
     const payload = JSON.parse(requests.find(item => item.path === '/api/jobs' && item.init?.method === 'POST')!.init!.body as string) as GenerateRequest;
     expect(payload.layout).toBe('a4');
+    expect(payload.language).toBe('简体中文');
     expect(payload.reading_mode).toBe('auto');
     expect(payload.scope.ranges.doc1).toBe('1-2,4');
     expect(payload.api.model).toBe('deepseek-flash');
@@ -64,6 +65,38 @@ describe('workspace generation', () => {
     expect(payload.api).not.toHaveProperty('has_api_key');
     expect(payload.learner_notes).toContain('看答案会，换题不会');
     expect(JSON.stringify(localStorage)).not.toContain('private-key');
+  });
+
+  it.each([
+    { choice: 'English', custom: '', expected: 'English' },
+    { choice: 'custom', custom: '  Deutsch  ', expected: 'Deutsch' },
+  ])('submits the chosen output language: $expected', async ({ choice, custom, expected }) => {
+    render(<App />);
+    await screen.findByRole('button', { name: /deepseek-flash/ });
+    fireEvent.change(screen.getByLabelText('选择学习材料文件'), { target: { files: [new File(['test'], '教材.pdf')] } });
+    await screen.findByLabelText('将 教材.pdf 纳入学习范围');
+    fireEvent.click(screen.getByRole('button', { name: /deepseek-flash/ }));
+    fireEvent.change(screen.getByLabelText(/API Key/), { target: { value: 'private-key' } });
+    fireEvent.change(screen.getByLabelText('输出语言'), { target: { value: choice } });
+    if (choice === 'custom') fireEvent.change(screen.getByLabelText('自定义语言'), { target: { value: custom } });
+    fireEvent.click(screen.getByRole('button', { name: '生成学习讲义' }));
+    await waitFor(() => expect(requests.some(item => item.path === '/api/jobs' && item.init?.method === 'POST')).toBe(true));
+    const payload = JSON.parse(requests.find(item => item.path === '/api/jobs' && item.init?.method === 'POST')!.init!.body as string) as GenerateRequest;
+    expect(payload.language).toBe(expected);
+  });
+
+  it.each(['', '   '])('rejects an empty custom language before creating a job: %j', async custom => {
+    render(<App />);
+    await screen.findByRole('button', { name: /deepseek-flash/ });
+    fireEvent.change(screen.getByLabelText('选择学习材料文件'), { target: { files: [new File(['test'], '教材.pdf')] } });
+    await screen.findByLabelText('将 教材.pdf 纳入学习范围');
+    fireEvent.click(screen.getByRole('button', { name: /deepseek-flash/ }));
+    fireEvent.change(screen.getByLabelText(/API Key/), { target: { value: 'private-key' } });
+    fireEvent.change(screen.getByLabelText('输出语言'), { target: { value: 'custom' } });
+    fireEvent.change(screen.getByLabelText('自定义语言'), { target: { value: custom } });
+    fireEvent.click(screen.getByRole('button', { name: '生成学习讲义' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('请填写输出语言。');
+    expect(requests.filter(item => item.path === '/api/jobs' && item.init?.method === 'POST')).toHaveLength(0);
   });
 
   it('runs a clearly identified demo without requiring files or credentials', async () => {
