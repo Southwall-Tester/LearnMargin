@@ -1,0 +1,42 @@
+# 安全边界与修复记录
+
+LearnMargin 是单用户本机工具。材料由用户导入，用户指定模型服务；指定服务能够看到被发送的材料。应用没有公网多用户认证，不应通过反向代理直接公开。
+
+## 本轮确认的问题
+
+| 问题 | 触发条件与影响 | 处理 |
+|---|---|---|
+| ZIP 只相信中央目录大小 | 导入伪造大小的 Office/EPUB 包，检查可能先大量解压再发现 CRC 错误；伪造截断后 CRC 还可能让库接受截断内容 | 从实际 STORE/DEFLATE 压缩流逐块限量读取，核对真实长度、流结束、CRC 和总预算，再交给文档库 |
+| XML 声明只按 ASCII 字节拦截 | UTF-16 等编码可越过声明过滤；未证实可利用的外部实体文件读取 | XML 解析器在识别编码后拒绝 DOCTYPE、ENTITY、外部实体；检查 OOXML 内容类型指定的 XML 部件 |
+| 上传限制晚于 multipart 解析 | 超大请求可能先进入框架临时文件，再触发文件大小检查 | JSON 256 KiB，上传体 50 MiB 加 64 KiB 表单开销；按实际接收字节限量，无长度或伪造长度也受限；单次仅一文件、无额外字段 |
+| 解析线程不可终止 | 恶意或异常原生解析可以持续占用服务资源 | 独立解析进程，150 秒与 2 GiB 上限；超时或取消先结束该进程树再清理 |
+| 本机 LibreOffice 不构成文档沙箱 | 转换器和子进程原本以当前用户权限处理文件 | 默认拒绝旧格式自动转换；仅本机 `LEARNMARGIN_ALLOW_LOCAL_OFFICE=1` 可启用可信文件转换，不接受 HTTP 信任开关 |
+| API 地址中的凭据可能进浏览器偏好 | 用户把 key 填入查询参数/片段，前端可先保存、后端才拒绝 | 地址校验与后端一致，拒绝账号、查询参数、片段及控制字符；读取旧偏好时清理不安全值 |
+| 模型响应未限制总体积与总时间 | 自定义上游持续输出或返回超大 JSON，可能耗尽资源 | 流式 8 MiB 上限，完整请求含重试共用总期限，JSON 深度上限；错误响应不读取正文，不跟随重定向 |
+| 上游 usage 字段名可能进入记录 | 上游在用量字段名中夹带敏感文本 | 只保存已知用量字段的有限非负数值，不回显上游错误正文或底层异常 |
+| 代理配置异常回显凭据 | HTTPS 代理地址无效时，HTTP 客户端构造错误可能带出代理用户名或凭据 | 初始化错误转换为固定提示，隐藏底层异常链；保留正常 HTTPS 代理支持 |
+| 本地目录重定向缺少文件级验证 | 有权修改数据目录的本地程序创建链接后，读写可能越过边界；未发现上传可创建该链接的远程链 | 拒绝资料/任务目录及元数据重定向；下载与来源读取也检查文件路径；并发元数据读写互斥 |
+
+## 额外加固
+
+- 校验实际连接为 loopback；API 拒绝不匹配的 Origin 和跨站 Fetch Metadata，含读取接口；同源 iframe 仍可用。普通本机 CLI 客户端可以不发送浏览器头，不因此获得公网使用权限。
+- 上传与连接测试分别最多两项同时执行，读取请求体最多 60 秒。响应禁止跨站资源嵌入与外站 iframe 嵌套，敏感 API 不缓存。
+- 新生成 HTML 的 CSP 只允许两个随软件提供的脚本哈希；用户内容仍经过 Markdown HTML 禁用、Jinja 转义和 KaTeX `trust=false`。本轮未复现可利用的正文 XSS，不把加固误报成已发现 XSS。
+- PDF Chromium 显式启用系统沙箱，无法启动时失败，不自动使用 `--no-sandbox`。生成过程中不加载外部资源。
+- 本机明文 HTTP 模型请求不使用环境代理；远程 HTTPS 保留用户配置的代理与默认 TLS 验证。API 地址不从材料或模型输出中获得。
+
+## 仍需明确的边界
+
+解析子进程的资源限制不是文件系统与网络访问隔离。原生 PDF、图像、Office 库以及显式启用的 LibreOffice 仍需及时更新；当前没有在 Windows 上为它们实现完整的 AppContainer/虚拟机沙箱。不能承诺任意恶意文件绝对安全，也没有证据把本轮 XML 过滤绕过定性为已经实现 XXE。
+
+Windows Job Object 限制提交内存和子进程树，Unix 使用进程组及资源上限；它们的内存计量口径不同，不是精确的等价容器配额。已生成的旧 HTML 不会自动重写。没有进行真实付费模型调用、未知漏洞利用测试或所有模型网关兼容验证。
+
+依赖审计覆盖锁定的 Python 包与 npm 依赖的已公布漏洞，不覆盖所有随包携带的原生库、系统 Python/Expat、操作系统和浏览器。Python 官方说明了 [XML 解析与 Expat 的安全边界](https://docs.python.org/3/library/xml.html#xml-security)；运行环境同样需要维护。
+
+Ubuntu 23.10 及以后对浏览器 user namespace 有额外限制。CI 为本次安装的两个 Playwright 浏览器的准确路径加载专用 AppArmor 配置，只放行它们创建 namespace；不用通配符覆盖其他程序，不全局关闭 AppArmor，也不传入 `--no-sandbox`。该配置只在临时 CI 机器生效。本机遇到同类启动错误时，参见 [Chromium 官方沙箱配置说明](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md)，配置系统支持的沙箱后再运行。
+
+## 可复核验证
+
+回归均使用合成文件和 mock API，无私人材料或真实密钥：ZIP 声明 100 字节但实际 8 MiB（包括伪造 CRC），不同编码与 OOXML 自定义后缀的声明，真实目录 junction，上传体边界和取消，模型响应膨胀/慢速输出，凭据反射，脚本/事件处理器与联网、本地文件请求阻断。实际 A4 PDF 检查公式、侧栏和内部链接。
+
+验证结果与未执行项见 [VALIDATION.md](VALIDATION.md)。提交到仓库的测试在 `tests/test_http_security.py`、`tests/test_extraction_worker.py`、`tests/test_ingestion.py`、`tests/test_storage_security.py`、`tests/test_provider.py`、`tests/test_config.py`、`tests/test_rendering.py` 和前端测试中。

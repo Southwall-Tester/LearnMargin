@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unicodedata import normalize
 
 import pytest
@@ -91,6 +95,69 @@ def test_build_uses_self_contained_fonts_and_escaped_title():
     assert "data:font/woff2;base64," in html
     assert "url(fonts/" not in html
     assert soup.title.get_text().startswith(lesson.title)
+    policy = soup.find("meta", attrs={"http-equiv": "Content-Security-Policy"})["content"]
+    script_directive = next(item.strip() for item in policy.split(";") if item.strip().startswith("script-src "))
+    assert "unsafe-inline" not in script_directive
+    assert "unsafe-eval" not in script_directive
+    expected = ["'sha256-" + base64.b64encode(hashlib.sha256(script.string.encode()).digest()).decode() + "'"
+                for script in soup.find_all("script")]
+    assert script_directive.split()[1:] == expected
+
+
+@pytest.mark.integration
+async def test_portable_html_csp_blocks_unapproved_scripts_handlers_and_local_reads(tmp_path: Path):
+    html = build_html(example_lesson(practice=False))
+    canary = tmp_path / "private-test-file.txt"
+    canary.write_text("SYNTHETIC_LOCAL_FILE_CANARY", encoding="utf-8")
+    # Simulate an HTML injection after escaping has already been tested. CSP
+    # provides another barrier while still allowing the actual layout scripts.
+    injected = ('<script>window.INJECTED_SCRIPT = true</script>'
+                '<button id="injected-handler" onclick="window.INJECTED_HANDLER = true">Click</button>'
+                f'<img src="{canary.as_uri()}"><img src="https://invalid.test/probe">')
+    path = tmp_path / "lesson.html"
+    path.write_text(html.replace("</body>", injected + "</body>"), encoding="utf-8")
+    requested, failed = [], {}
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True, chromium_sandbox=True)
+        try:
+            page = await browser.new_page()
+            await page.add_init_script("""window.policyViolations = [];
+                document.addEventListener('securitypolicyviolation', event =>
+                    window.policyViolations.push({directive: event.effectiveDirective, uri: event.blockedURI}));""")
+            page.on("request", lambda request: requested.append(request.url))
+            page.on("requestfailed", lambda request: failed.update({request.url: request.failure}))
+            await page.goto(path.as_uri(), wait_until="load")
+            await page.wait_for_function("window.learnmarginReport !== undefined")
+            assert not (await page.evaluate("window.learnmarginReport")).get("error")
+            await page.locator("#injected-handler").click()
+            await page.wait_for_function("() => window.policyViolations.some(item => item.directive === 'script-src-attr')")
+            assert not await page.evaluate("Boolean(window.INJECTED_SCRIPT || window.INJECTED_HANDLER)")
+            assert set(requested) == {path.as_uri(), canary.as_uri(), "https://invalid.test/probe"}
+            assert set(failed) == {canary.as_uri(), "https://invalid.test/probe"}
+            violations = await page.evaluate("window.policyViolations")
+            assert {item["directive"] for item in violations} >= {"script-src-elem", "script-src-attr", "img-src"}
+            assert any(item["uri"] == "https://invalid.test/probe" for item in violations)
+            assert any(item["directive"] == "img-src" and item["uri"].startswith("file") for item in violations)
+        finally:
+            await browser.close()
+
+
+async def test_renderer_does_not_retry_without_sandbox(tmp_path: Path, monkeypatch):
+    launches = []
+
+    async def unavailable_sandbox(**options):
+        launches.append(options)
+        raise RuntimeError("Synthetic sandbox unavailable")
+
+    @asynccontextmanager
+    async def fake_playwright():
+        yield SimpleNamespace(chromium=SimpleNamespace(launch=unavailable_sandbox))
+
+    monkeypatch.setattr("learnmargin.rendering.async_playwright", fake_playwright)
+    with pytest.raises(RenderError, match="不会改用无沙箱模式"):
+        await render_lesson(example_lesson(), tmp_path)
+    assert len(launches) == 1 and launches[0]["chromium_sandbox"] is True
+    assert not (tmp_path / "lesson.pdf").exists()
 
 
 @pytest.mark.integration

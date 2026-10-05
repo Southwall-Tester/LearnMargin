@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr
 
-from learnmargin.config import default_api, normalize_base_url, resolve_api
+from learnmargin.config import default_api, normalize_base_url, resolve_api, validate_api_config
 from learnmargin.models import APIConfig
 
 
@@ -90,3 +90,36 @@ def test_explicit_key_wins_without_mutating_the_request(monkeypatch):
 def test_blank_model_rejected():
     with pytest.raises(ValueError, match="模型名"):
         resolve_api(APIConfig(model="  "))
+
+
+@pytest.mark.parametrize("value", [
+    "https://[never-show-secret]/v1", "https://[::1/v1", "https://@api.example/v1",
+    "https://api.example:0/v1", "https://%61pi.example/v1", "https://api.example\\bad/v1",
+    "https://api.ex\nample/v1", "https://api.example/v1\t", "\rhttps://api.example/v1",
+    "https://api.example/v1\x7f", "https://api.example/space here", "https://api.example/" + "a" * 4096,
+])
+def test_ambiguous_or_malformed_endpoint_is_rejected_without_parser_echo(value):
+    with pytest.raises(ValueError) as caught:
+        normalize_base_url(value)
+    assert "never-show-secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize("value", ["fake-secret\r\nX-Test: injected", "fake-secret\x00", "fake-密钥",
+                                         "fake secret", "fake-secret" * 1024])
+def test_invalid_key_is_rejected_without_echo(value):
+    with pytest.raises(ValueError, match="密钥格式") as caught:
+        resolve_api(APIConfig(api_key=SecretStr(value)))
+    assert "fake" not in str(caught.value)
+
+
+def test_environment_key_uses_same_validation(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fake-secret\r\nInjected: yes")
+    with pytest.raises(ValueError, match="密钥格式") as caught:
+        resolve_api(APIConfig())
+    assert "fake-secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize("value", ["https://192.168.1.5:8443/v1", "https://[fd00::1]/v1",
+                                         "https://models.intranet/v1", "http://127.0.0.1:11434/v1"])
+def test_explicit_internal_and_local_endpoints_remain_supported(value):
+    assert validate_api_config(APIConfig(base_url=value)).base_url == value

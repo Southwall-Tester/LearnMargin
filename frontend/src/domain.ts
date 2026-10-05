@@ -29,9 +29,29 @@ export function scopeError(documents: DocumentSummary[], scope: Scope): string |
 
 export function configError(config: APIConfig): string | null {
   if (!config.model.trim()) return '请填写模型名称。';
+  return apiUrlError(config.base_url);
+}
+
+function apiUrlError(value: string): string | null {
+  const candidate = value.replace(/^ +| +$/g, '');
+  // URL() silently removes tabs/newlines and normalizes backslashes. Validate
+  // the original spelling first, matching the server's endpoint boundary.
+  if (candidate.length > 4096 || /[\s\x00-\x1f\x7f]/u.test(candidate)) {
+    return 'API 地址过长或含有空白、控制字符，请检查地址。';
+  }
+  const authority = /^https?:\/\/([^/?#]*)/i.exec(candidate)?.[1];
+  if (!authority) return 'API 地址需要完整的 http:// 或 https:// 地址。';
+  if (candidate.includes('\\') || authority.includes('%')) return 'API 地址的主机名或路径格式不正确。';
   try {
-    const url = new URL(config.base_url);
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error();
+    const url = new URL(candidate);
+    if (url.port === '0') return 'API 地址的端口不正确。';
+    if (authority.includes('@') || url.username || url.password || url.search || url.hash) {
+      return 'API 地址不能包含账号、密钥、查询参数或片段；请把密钥填入独立字段。';
+    }
+    const hostname = authority.startsWith('[') ? authority.slice(0, authority.indexOf(']') + 1) : authority.split(':')[0];
+    if (url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(hostname.toLowerCase())) {
+      return '远程 API 请使用 HTTPS；HTTP 仅用于本机模型服务。';
+    }
   } catch { return '请填写有效的 HTTP 或 HTTPS API 地址，不要在地址中放入密钥。'; }
   return null;
 }
@@ -40,7 +60,9 @@ const preferenceKey = 'learnmargin.model-preferences.v1';
 
 export function saveModelPreferences(config: APIConfig): void {
   const { base_url, model, protocol, vision, json_mode, timeout_seconds } = config;
-  try { localStorage.setItem(preferenceKey, JSON.stringify({ base_url, model, protocol, vision, json_mode, timeout_seconds })); }
+  // Guard the storage boundary too, including callers other than the form.
+  const safeUrl = apiUrlError(base_url) ? {} : { base_url };
+  try { localStorage.setItem(preferenceKey, JSON.stringify({ ...safeUrl, model, protocol, vision, json_mode, timeout_seconds })); }
   catch { /* Private browsing or storage limits should not block generation. */ }
 }
 
@@ -50,12 +72,15 @@ export function loadModelPreferences(): Partial<Omit<APIConfig, 'api_key'>> {
     if (!raw || typeof raw !== 'object') return {};
     const source = raw as Record<string, unknown>;
     const result: Partial<Omit<APIConfig, 'api_key'>> = {};
-    if (typeof source.base_url === 'string') result.base_url = source.base_url;
+    if (typeof source.base_url === 'string' && !apiUrlError(source.base_url)) result.base_url = source.base_url;
     if (typeof source.model === 'string') result.model = source.model;
     if (source.protocol === 'chat_completions' || source.protocol === 'responses') result.protocol = source.protocol;
     if (typeof source.vision === 'boolean') result.vision = source.vision;
     if (typeof source.json_mode === 'boolean') result.json_mode = source.json_mode;
     if (typeof source.timeout_seconds === 'number' && source.timeout_seconds >= 10 && source.timeout_seconds <= 600) result.timeout_seconds = source.timeout_seconds;
+    // Remove legacy URL credentials and secret/unknown fields instead of merely
+    // ignoring them while leaving their values in browser storage.
+    try { localStorage.setItem(preferenceKey, JSON.stringify(result)); } catch { /* Storage may be read-only. */ }
     return result;
   } catch { return {}; }
 }

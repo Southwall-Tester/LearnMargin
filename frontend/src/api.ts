@@ -34,6 +34,13 @@ export function post<T>(path: string, body?: unknown): Promise<T> {
 
 /** Only locally served artifacts should appear in frames, images or download links. */
 export function localArtifact(url: string | undefined): string | undefined {
-  if (!url || !url.startsWith('/api/') || url.startsWith('//') || /[\\\r\n]/.test(url)) return undefined;
-  return url;
+  if (!url || !url.startsWith('/api/') || /[\\\x00-\x20\x7f]/.test(url)) return undefined;
+  try {
+    const parsed = new URL(url, window.location.origin);
+    // Reject browser-normalized traversal, encoded separators and alternate
+    // endpoints hidden behind query strings before embedding any URL.
+    if (parsed.origin !== window.location.origin || parsed.pathname !== url ||
+        /%(?:2e|2f|5c|0[0-9a-f]|1[0-9a-f]|7f)/i.test(url)) return undefined;
+    return url;
+  } catch { return undefined; }
 }

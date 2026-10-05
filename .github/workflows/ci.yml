@@ -40,6 +40,30 @@ jobs:
           uv run playwright install --with-deps chromium
           sudo apt-get update
           sudo apt-get install -y fonts-noto-cjk
+      - name: Allow installed test browsers to create their sandbox
+        run: |
+          uv run python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          cache = Path.home() / ".cache" / "ms-playwright"
+          browsers = [*cache.glob("chromium-*/chrome-linux64/chrome"),
+                      *cache.glob("chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell")]
+          assert len(browsers) == 2, "Expected the two freshly installed Playwright browsers"
+          policy = "abi <abi/4.0>,\ninclude <tunables/global>\n"
+          for index, browser in enumerate(browsers):
+              browser = browser.resolve(strict=True)
+              assert browser.is_file() and browser.is_relative_to(cache.resolve())
+              assert re.fullmatch(r"[A-Za-z0-9_./-]+", str(browser))
+              # Exact installed binaries only; do not disable userns restrictions
+              # globally or allow arbitrary binaries under a wildcard path.
+              policy += (f'profile learnmargin-ci-browser-{index} "{browser}" '
+                         'flags=(unconfined) {\n  userns,\n}\n')
+          (Path(os.environ["RUNNER_TEMP"]) / "learnmargin-ci-chromium").write_text(policy)
+          PY
+          sudo install -o root -g root -m 644 "$RUNNER_TEMP/learnmargin-ci-chromium" /etc/apparmor.d/learnmargin-ci-chromium
+          sudo apparmor_parser -r /etc/apparmor.d/learnmargin-ci-chromium
       - name: Check application and skill
         run: |
           uv run ruff check src tests scripts

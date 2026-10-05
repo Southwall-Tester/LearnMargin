@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
 from pathlib import Path
 from time import perf_counter
 from typing import TypeVar
@@ -12,30 +13,66 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from .config import validate_api_config
 from .models import APIConfig, ConnectionTestResult
 
 T = TypeVar("T", bound=BaseModel)
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_IMAGE_BYTES = 22 * 1024 * 1024
+USAGE_FIELDS = frozenset({
+    "input_tokens", "output_tokens", "total_tokens", "prompt_tokens", "completion_tokens",
+    "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
+})
 
 
 class ProviderError(ValueError):
     pass
 
 
+class JSONDepthError(ValueError):
+    pass
+
+
+def bounded_json_loads(text: str) -> object:
+    """Bound nesting before the parser allocates a deeply recursive structure."""
+    depth = 0
+    in_string = escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > 128:
+                raise JSONDepthError("JSON 嵌套层级过深。")
+        elif char in "]}":
+            depth -= 1
+    return json.loads(text)
+
+
 def decode_json(text: str) -> dict:
     text = text.strip()
     if text.startswith("```") and text.endswith("```"):
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    value = json.loads(text)
+    value = bounded_json_loads(text)
     if not isinstance(value, dict):
         raise ValueError("Expected a JSON object")
     return value
 
 
-def output_error_summary(error: ValueError, schema: type[BaseModel]) -> str:
+def output_error_summary(error: ValueError | RecursionError, schema: type[BaseModel]) -> str:
     """Describe output faults without echoing model values or arbitrary field names."""
     if isinstance(error, json.JSONDecodeError):
         category = "invalid_escape" if error.msg.startswith("Invalid \\escape") else "invalid_json"
         return f"JSON 语法错误（{category}），第 {error.lineno} 行、第 {error.colno} 列"
+    if isinstance(error, (RecursionError, JSONDepthError)):
+        return "JSON 嵌套层级过深（too_deep）"
     if not isinstance(error, ValidationError):
         return "JSON 顶层必须是对象（object_required）"
 
@@ -87,13 +124,23 @@ def output_error_summary(error: ValueError, schema: type[BaseModel]) -> str:
 
 class Provider:
     def __init__(self, config: APIConfig, *, transport: httpx.AsyncBaseTransport | None = None):
-        self.config = config
-        key = config.api_key.get_secret_value()
-        self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(config.timeout_seconds, connect=20),
-            follow_redirects=False, transport=transport,
-            headers={"Authorization": f"Bearer {key}"} if key else {},
-        )
+        self.config = validate_api_config(config)
+        key = self.config.api_key.get_secret_value()
+        try:
+            self.client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self.config.timeout_seconds, connect=20),
+                # Keep explicitly configured HTTPS proxies usable, but never send
+                # local plaintext traffic through a proxy inherited from the shell.
+                follow_redirects=False, trust_env=urlsplit(self.config.base_url).scheme == "https",
+                transport=transport,
+                # Request plain JSON so even hostile compressed bodies cannot expand
+                # without a bound inside HTTPX's automatic content decoder.
+                headers={"Accept-Encoding": "identity", **({"Authorization": f"Bearer {key}"} if key else {})},
+            )
+        except (ValueError, OSError, httpx.HTTPError, httpx.InvalidURL):
+            # HTTPX may echo a malformed environment proxy URL (whose username
+            # itself can be a credential), or a private certificate path.
+            raise ProviderError("无法初始化 API 连接，请检查代理与证书配置。") from None
         self.usage: list[dict] = []
 
     async def __aenter__(self):
@@ -104,46 +151,86 @@ class Provider:
 
     async def _request(self, payload: dict, *, retry_transient: bool = True,
                        timeout_seconds: float | None = None) -> dict:
+        limit = self.config.timeout_seconds if timeout_seconds is None else timeout_seconds
+        try:
+            # I/O timeouts alone can be kept alive by a byte-at-a-time response.
+            # This deadline also covers retries, their delays, and body reading.
+            async with asyncio.timeout(limit):
+                return await self._request_with_retries(payload, retry_transient, limit)
+        except (TimeoutError, httpx.TimeoutException):
+            if timeout_seconds is not None:
+                raise ProviderError("连接测试超时，请检查服务状态和网络连接后重试。") from None
+            raise ProviderError("模型响应超时。请缩小学习范围或提高超时时间后重新生成。") from None
+        except httpx.HTTPError:
+            raise ProviderError("无法连接 API，请检查服务地址和网络连接。") from None
+
+    async def _request_with_retries(self, payload: dict, retry_transient: bool, timeout_seconds: float) -> dict:
         endpoint = "/responses" if self.config.protocol == "responses" else "/chat/completions"
         attempts = 3 if retry_transient else 1
         for attempt in range(attempts):
-            try:
-                options = {} if timeout_seconds is None else {"timeout": timeout_seconds}
-                response = await self.client.post(
-                    self.config.base_url.rstrip("/") + endpoint, json=payload, **options)
-            except httpx.TimeoutException as exc:
-                if timeout_seconds is not None:
-                    raise ProviderError("连接测试超时，请检查服务状态和网络连接后重试。") from exc
-                raise ProviderError("模型响应超时。请缩小学习范围或提高超时时间后重新生成。") from exc
-            except httpx.HTTPError as exc:
-                raise ProviderError("无法连接 API，请检查服务地址和网络连接。") from exc
-            if response.status_code in {429, 502, 503, 504} and attempt < attempts - 1:
+            async with self.client.stream(
+                "POST", self.config.base_url.rstrip("/") + endpoint, json=payload,
+                timeout=httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 20)),
+            ) as response:
+                retry = response.status_code in {429, 502, 503, 504} and attempt < attempts - 1
+                if not retry:
+                    if response.status_code in {401, 403}:
+                        raise ProviderError("API 鉴权失败，请核对该服务的密钥与模型权限。")
+                    if response.status_code in {402, 429}:
+                        raise ProviderError("API 请求额度或速率受限，请检查账户额度后稍后重试。")
+                    if response.status_code in {400, 404, 405, 422}:
+                        raise ProviderError(
+                            f"API 返回 HTTP {response.status_code}。请核对服务地址、协议、模型名与 JSON 模式。"
+                        )
+                    if response.status_code >= 300:
+                        raise ProviderError(
+                            f"API 返回 HTTP {response.status_code}。请核对协议、模型名、视觉能力与 JSON 模式。"
+                        )
+                    body = await self._read_body(response)
+            if retry:
                 await asyncio.sleep(2 ** (attempt + 1))
                 continue
-            if response.status_code in {401, 403}:
-                raise ProviderError("API 鉴权失败，请核对该服务的密钥与模型权限。")
-            if response.status_code in {402, 429}:
-                raise ProviderError("API 请求额度或速率受限，请检查账户额度后稍后重试。")
-            if response.status_code in {400, 404, 405, 422}:
-                raise ProviderError(
-                    f"API 返回 HTTP {response.status_code}。请核对服务地址、协议、模型名与 JSON 模式。"
-                )
-            if response.status_code >= 300:
-                raise ProviderError(
-                    f"API 返回 HTTP {response.status_code}。请核对协议、模型名、视觉能力与 JSON 模式。"
-                )
             try:
-                result = response.json()
-            except ValueError as exc:
-                raise ProviderError("API 未返回有效 JSON 响应，请检查 Base URL。") from exc
+                result = bounded_json_loads(body.decode("utf-8-sig"))
+            except (ValueError, RecursionError):
+                raise ProviderError("API 未返回有效 JSON 响应，请检查 Base URL。") from None
             if not isinstance(result, dict):
                 raise ProviderError("API 响应结构不受支持。")
             usage = result.get("usage") or {}
             if not isinstance(usage, dict):
                 usage = {}
-            self.usage.append({key: value for key, value in usage.items() if isinstance(value, (int, float))})
+            # Only documented counters are persisted; arbitrary upstream keys can
+            # contain secrets even when their values are harmless numbers.
+            self.usage.append({key: value for key, value in usage.items()
+                               if key in USAGE_FIELDS and type(value) in {int, float}
+                               and 0 <= value <= 2**63 - 1 and math.isfinite(value)})
             return result
         raise ProviderError("API 暂时不可用。")
+
+    @staticmethod
+    async def _read_body(response: httpx.Response) -> bytes:
+        if response.headers.get("content-encoding", "identity").strip().lower() not in {"", "identity"}:
+            raise ProviderError("API 返回了未请求的压缩响应，请配置网关返回未压缩 JSON。")
+        length = response.headers.get("content-length")
+        if length is not None:
+            try:
+                announced = int(length)
+            except ValueError:
+                raise ProviderError("API 返回了无效的响应长度。") from None
+            if announced < 0 or announced > MAX_RESPONSE_BYTES:
+                raise ProviderError("API 响应过大，请缩小学习范围或检查服务配置。")
+        if response.is_stream_consumed:
+            # Already-buffered responses are used by embedded/mock transports.
+            data = response.content
+            if len(data) > MAX_RESPONSE_BYTES:
+                raise ProviderError("API 响应过大，请缩小学习范围或检查服务配置。")
+            return data
+        data = bytearray()
+        async for chunk in response.aiter_raw(chunk_size=65536):
+            if len(data) + len(chunk) > MAX_RESPONSE_BYTES:
+                raise ProviderError("API 响应过大，请缩小学习范围或检查服务配置。")
+            data.extend(chunk)
+        return bytes(data)
 
     async def test_connection(self) -> ConnectionTestResult:
         """Send one bounded text-only probe; never retry or include learning material."""
@@ -154,12 +241,7 @@ class Provider:
         payload[limit_key] = 256
         timeout_seconds = min(self.config.timeout_seconds, 30)
         started = perf_counter()
-        try:
-            # httpx timeouts bound individual I/O phases; this also bounds total duration.
-            async with asyncio.timeout(timeout_seconds):
-                result = await self._request(payload, retry_transient=False, timeout_seconds=timeout_seconds)
-        except TimeoutError as exc:
-            raise ProviderError("连接测试超时，请检查服务状态和网络连接后重试。") from exc
+        result = await self._request(payload, retry_transient=False, timeout_seconds=timeout_seconds)
         if result.get("error") or not self._text(result).strip():
             raise ProviderError("API 未返回有效文本，连接测试未通过。请核对服务协议和模型名。")
         return ConnectionTestResult(model=self.config.model, latency_ms=round((perf_counter() - started) * 1000))
@@ -168,9 +250,10 @@ class Provider:
         encoded = []
         total = 0
         for image in images:
-            data = image.read_bytes()
+            with image.open("rb") as stream:
+                data = stream.read(MAX_IMAGE_BYTES - total + 1)
             total += len(data)
-            if total > 22 * 1024 * 1024:
+            if total > MAX_IMAGE_BYTES:
                 raise ProviderError("本轮图片数据过大，请缩小范围后再生成。")
             mime = "image/jpeg" if image.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
             encoded.append(f"data:{mime};base64," + base64.b64encode(data).decode("ascii"))
@@ -233,7 +316,7 @@ class Provider:
             text = self._text(result)
             try:
                 return schema.model_validate(decode_json(text))
-            except ValueError as error:
+            except (ValueError, RecursionError) as error:
                 summary = output_error_summary(error, schema)
                 if attempt:
                     raise ProviderError(
