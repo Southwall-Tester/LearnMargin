@@ -17,6 +17,8 @@ jobs:
     name: Tests, PDF rendering and packages
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      LEARNMARGIN_REQUIRE_SANDBOX_TESTS: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -39,7 +41,7 @@ jobs:
           uv sync --frozen --extra dev --python 3.13
           uv run playwright install --with-deps chromium
           sudo apt-get update
-          sudo apt-get install -y fonts-noto-cjk
+          sudo apt-get install -y fonts-noto-cjk bubblewrap libreoffice-writer libreoffice-impress
       - name: Allow installed test browsers to create their sandbox
         run: |
           uv run python - <<'PY'
