@@ -37,7 +37,6 @@ export type GenerateRequest = {
   api: APIConfig;
   learner_notes: string;
   language: string;
-  section_count: number;
   layout: 'a4' | 'wide';
   reading_mode: 'auto' | 'handwritten';
 };

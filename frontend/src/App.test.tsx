@@ -37,7 +37,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('workspace generation', () => {
-  it('uploads material, validates ranges, and submits A4 with the configured model', async () => {
+  it.each(['a4', 'wide'] as const)('uploads material, validates ranges, and submits %s without a chapter count', async layout => {
     render(<App />);
     await screen.findByRole('button', { name: /deepseek-flash/ });
     fireEvent.change(screen.getByLabelText('选择学习材料文件'), { target: { files: [new File(['test'], '教材.pdf', { type: 'application/pdf' })] } });
@@ -53,10 +53,14 @@ describe('workspace generation', () => {
     fireEvent.click(screen.getByRole('button', { name: /deepseek-flash/ }));
     fireEvent.change(screen.getByLabelText(/API Key/), { target: { value: 'private-key' } });
     fireEvent.click(screen.getByRole('button', { name: '看答案会，换题不会' }));
+    expect(screen.queryByLabelText('讲解章节数')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('PDF 版式')).toHaveValue('a4');
+    fireEvent.change(screen.getByLabelText('PDF 版式'), { target: { value: layout } });
     fireEvent.click(screen.getByRole('button', { name: '生成学习讲义' }));
     await waitFor(() => expect(requests.some(item => item.path === '/api/jobs' && item.init?.method === 'POST')).toBe(true));
     const payload = JSON.parse(requests.find(item => item.path === '/api/jobs' && item.init?.method === 'POST')!.init!.body as string) as GenerateRequest;
-    expect(payload.layout).toBe('a4');
+    expect(payload.layout).toBe(layout);
+    expect(payload).not.toHaveProperty('section_count');
     expect(payload.language).toBe('简体中文');
     expect(payload.reading_mode).toBe('auto');
     expect(payload.scope.ranges.doc1).toBe('1-2,4');

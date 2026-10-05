@@ -48,7 +48,6 @@ export default function App() {
   const [scope, setScope] = useState<Scope>({ mode: 'all', ranges: {}, topics: '', include_prerequisites: true });
   const [notes, setNotes] = useState('');
   const [selectedDifficulties, setSelectedDifficulties] = useState<string[]>([]);
-  const [sectionCount, setSectionCount] = useState(4);
   const [layout, setLayout] = useState<'a4' | 'wide'>('a4');
   const [outputLanguage, setOutputLanguage] = useState('简体中文');
   const [customLanguage, setCustomLanguage] = useState('');
@@ -198,7 +197,7 @@ export default function App() {
         api: { ...config, base_url: config.base_url.trim(), model: config.model.trim(), api_key: config.api_key.trim() },
         learner_notes: [...selectedDifficulties, notes.trim()].filter(Boolean).join('；'),
         language: outputLanguage === 'custom' ? customLanguage.trim() : outputLanguage,
-        section_count: sectionCount, layout, reading_mode: readingMode,
+        layout, reading_mode: readingMode,
       };
       const job = demo ? await post<Job>('/api/demo') : await post<Job>('/api/jobs', body);
       setJobs(current => [job, ...current.filter(item => item.id !== job.id)]);
@@ -304,8 +303,8 @@ export default function App() {
           <label className="field output-language-field">输出语言<select value={outputLanguage} onChange={event => setOutputLanguage(event.target.value)}><option value="简体中文">简体中文</option><option value="繁體中文">繁體中文</option><option value="English">English</option><option value="日本語">日本語</option><option value="custom">自定义</option></select></label>
           {outputLanguage === 'custom' && <label className="field custom-language-field">自定义语言<input value={customLanguage} maxLength={80} onChange={event => setCustomLanguage(event.target.value)} placeholder="例如：Deutsch" /></label>}
           <label className="field reading-mode-field">材料识读<select aria-label="材料识读" aria-describedby="reading-mode-help" value={readingMode} onChange={event => setReadingMode(event.target.value as 'auto' | 'handwritten')}><option value="auto">自动识读 · 扫描页自动使用视觉模型</option><option value="handwritten">手写讲义 · 逐页识读文字与公式</option></select><small id="reading-mode-help">识读会增加 API 调用；疑点保留供原页核对。</small></label>
-          <div className="lesson-options"><label className="field">讲解章节数<select value={sectionCount} onChange={event => setSectionCount(Number(event.target.value))}>{[2, 3, 4, 5, 6, 7, 8].map(number => <option key={number} value={number}>{number} 个学习章节</option>)}</select></label><label className="field">PDF 版式<select value={layout} onChange={event => setLayout(event.target.value as 'a4' | 'wide')}><option value="a4">A4 标准版 · 打印 / 平板</option><option value="wide">电脑宽版 · 更宽阅读区域</option></select></label></div>
-          <p className="helper">{layout === 'a4' ? '正文与学习侧栏都排在 A4 页面内。' : '更宽的页面为正文和侧栏提供额外空间。'} 章节数影响讲解深度，不等于最终页数。</p>
+          <label className="field pdf-layout-field">PDF 版式<select value={layout} onChange={event => setLayout(event.target.value as 'a4' | 'wide')}><option value="a4">A4 标准版 · 打印 / 平板</option><option value="wide">电脑宽版 · 更宽阅读区域</option></select></label>
+          <p className="helper">{layout === 'a4' ? '正文与学习侧栏都排在 A4 页面内。' : '更宽的页面为正文和侧栏提供额外空间。'}</p>
           <div className="generate-row"><div><strong>{selected.length ? `已选 ${selected.length} 份材料` : '尚未选择材料'}</strong><small>{config.model || '请连接模型'} · {layout === 'a4' ? 'A4 标准版' : '电脑宽版'}</small></div><button className="button primary generate-button" disabled={busy || !settings} onClick={() => void startGeneration()}>{submitting ? <LoaderCircle className="spin" size={18} /> : <Sparkles size={18} />} {submitting ? '正在创建任务' : '生成学习讲义'}<ArrowRight size={17} /></button></div>
         </section>
       </div>

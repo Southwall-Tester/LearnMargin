@@ -104,6 +104,33 @@ def test_validation_never_reflects_secret(client):
     assert isinstance(response.json()["detail"], str)
 
 
+@pytest.mark.parametrize("legacy_count", [4, 12, "retired-control"])
+def test_legacy_section_count_is_ignored_by_api_and_never_persisted(client, monkeypatch, legacy_count):
+    captured = []
+
+    async def generated(request, *_):
+        captured.append(request.model_dump(mode="json"))
+        return demo_lesson()
+
+    monkeypatch.setattr("learnmargin.app.generate_lesson", generated)
+    monkeypatch.setattr(rendering, "render_lesson", fake_render)
+    document = upload(client)
+    payload = {"document_ids": [document["id"]], "section_count": legacy_count,
+               "api": {"api_key": "in-memory-legacy-test-key"}}
+    submitted = client.post("/api/jobs", json=payload)
+    assert submitted.status_code == 202, submitted.text
+    result = wait_job(client, submitted.json()["id"])
+    assert result["status"] == "completed", result
+    assert len(captured) == 1 and "section_count" not in captured[0]
+    assert "section_count" not in client.app.state.store.job(result["id"])["request"]
+    schema = client.get("/openapi.json").json()["components"]["schemas"]["GenerateRequest"]
+    assert "section_count" not in schema["properties"]
+    assert schema["additionalProperties"] is False
+    payload["unknown_option"] = "still-invalid"
+    assert client.post("/api/jobs", json=payload).status_code == 422
+    assert len(client.get("/api/jobs").json()) == 1
+
+
 def test_missing_key_and_invalid_scope_fail_before_job(client):
     document = upload(client)
     request = GenerateRequest(document_ids=[document["id"]]).model_dump(mode="json")

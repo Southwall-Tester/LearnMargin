@@ -148,7 +148,7 @@ async def test_section_failure_reports_stage_and_preserves_completed_sections(tm
         SourceUnit(index=index, label=f"第 {index} 段", text="条件概率改变参照范围。" * 5)
         for index in (1, 2)])
     output = tmp_path / "output"
-    request = GenerateRequest(document_ids=[document_id], section_count=2, api=APIConfig(vision=False))
+    request = GenerateRequest(document_ids=[document_id], api=APIConfig(vision=False))
     with pytest.raises(ExceptionGroup) as caught:
         await generate_lesson(request, [document], Store(tmp_path / "data"), output,
                               StageProvider(), lambda *_: None)
