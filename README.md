@@ -101,9 +101,13 @@ API 地址不能携带账号、查询参数或片段，请把密钥填在独立�
 | EPUB | 按阅读顺序的章节及内嵌图片 |
 | TXT / Markdown / HTML / CSV 等 | 按连续内容段；不会加载外部网页素材 |
 | PNG / JPEG / WebP / TIFF 等 | 图片或帧；需要视觉模型理解内容 |
-| DOC / PPT / ODT / ODP / RTF | 自动转换默认关闭，建议先导出 PDF；可信材料可显式启用本机 LibreOffice |
+| DOC / PPT / ODT / ODP / RTF | 可选 LibreOffice 沙箱转换；需要本机启用及受支持的系统隔离 |
 
-PPTX 的复杂图表、公式、SmartArt，以及 DOCX 的浮动布局可能无法完整提取。对这些材料，可先导出 PDF 后导入。旧格式转换默认关闭：独立配置、禁止宏与超时并不构成操作系统文档沙箱。仅处理可信文件时，可在本机 `.env` 设置 `LEARNMARGIN_ALLOW_LOCAL_OFFICE=1`，安装 LibreOffice 后重启服务。该开关不能通过上传请求打开。本轮未实测 LibreOffice 转换，合成测试覆盖默认拒绝、显式启用、缺依赖与超时。
+PPTX 的复杂图表、公式、SmartArt，以及 DOCX 的浮动布局可能无法完整提取。对这些材料，可先导出 PDF 后导入。旧格式转换默认关闭，启用后也必须建立系统沙箱；失败时直接拒绝转换，没有普通进程回退。该开关不能通过上传请求打开。
+
+Windows 需要 WSL 2。运行 `learnmargin --setup-office`（源码环境用 `uv run learnmargin --setup-office`）配置专用的 `LearnMargin-Office` 发行版，再在本机 `.env` 设置 `LEARNMARGIN_ALLOW_LOCAL_OFFICE=1`。配置命令下载并校验官方 Ubuntu Base，安装 LibreOffice、bubblewrap 和中文字体，不修改已有发行版；同名环境已存在时拒绝覆盖。Windows 本机无需安装 LibreOffice，材料和结果仅通过管道传递，转换器不能访问 Windows 盘、桌面或宿主网络。配置仅由这个显式命令执行，上传不会自动安装系统组件。
+
+Linux 需要系统 LibreOffice、Python 3 和 bubblewrap 0.9 或更高版本，并设置同一本机启用开关。每次转换只读挂载输入和必需运行库，临时写入使用限额内存文件系统。macOS 暂无此转换沙箱，请先导出 PDF。平台条件及实际验证见[安全说明](docs/SECURITY.md)。
 
 上传前先限制实际请求体，压缩包按实际解压流校验大小与 CRC；XML 的 DTD/实体声明在编码识别后拒绝。文档解析在独立子进程内执行，限制为 150 秒和 2 GiB，超时或取消时终止该任务的进程树。资源限制不能替代对原生解析器的系统沙箱；完整边界与验证记录见[安全说明](docs/SECURITY.md)。
 

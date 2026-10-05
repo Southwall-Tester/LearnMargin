@@ -50,3 +50,13 @@ LibreOffice 未在本机安装，旧 Office 真实转换未验证；缺依赖、
 - 从 sdist 构建 wheel，在仓库外的新虚拟环境安装，验证前端资源、健康接口和无 API 示例生成；得到五页 A4、13 个内部链接。包内未发现私人文件或已知凭据模式，独立 Skill 18 章资源完整；这类扫描不能识别一切可能的秘密格式。
 - 锁定的 36 个 Python 运行依赖经 pip-audit 检查，npm 依赖经 npm audit 检查，均未报告已知漏洞；没有替换依赖版本。依赖审计不涵盖所有原生组件、系统库和未知漏洞。
 - 本轮未安装或实测 LibreOffice、未调用真实模型 API。旧格式自动转换默认关闭；显式启用后仍不是文件系统/网络沙箱。解析资源限制和回归不能证明所有恶意文档均安全，完整边界见 [SECURITY.md](SECURITY.md)。
+
+## 旧 Office 转换的系统隔离（2026-10-05，替代上一节的转换边界）
+
+- 转换改为强制 bubblewrap：原生 Linux 直接运行，Windows 通过专用 WSL 2 发行版及非 root 用户运行。隔离失败拒绝转换，不回退到普通 LibreOffice；此前试验的 Windows LPAC 路线未进入产品。通用 PDF/图像提取仍是独立的资源限制 worker，不能把转换隔离扩展声称为所有解析器均已进入 OS 沙箱。
+- Windows 完整回归 459 项通过、23 项跳过；跳过项涉及 Linux 专属验证、可选 PyMuPDF 模块和本机无创建权限的文件符号链接。独立 Skill 23 项及前端 34 项通过。安装入口另补真实 PowerShell 环境回归，CLI 13 项通过。
+- Windows 正式桥接的 21 项测试通过、1 项文件符号链接测试跳过。真实 RTF 经 Windows worker → WSL → bubblewrap → LibreOffice → PDF 提取，HTTP 上传返回 201，正文和 PNG 正常；另一份合成中文 RTF 生成一页 PDF，准确提取“学习讲义”。没有使用私人材料或真实模型 API。
+- 强杀实际 Windows owner 后，真实运行并脱离进程组的 Linux 子进程全部退出，内存临时材料目录清除。该测试曾发现 WSL 发送 SIGHUP 会跳过默认清理，已改为取消标志后以正式实现重测通过；另测 EOF、心跳超时、SIGTERM、材料截断、输出堵塞及 Windows 写管道堵塞。
+- Linux 的真实文件/网络隔离、只读输入、tmpfs 配额、子孙进程结束、RTF 正文及完整 API 导入已在 Ubuntu 24.04 / bubblewrap 0.9 / LibreOffice 24.2.7 的 CI 通过。WSL helper 的 32 项测试也在真实 Linux 环境通过，包含信号和清理；Windows Job 的结束不被当作 Linux 子树结束的替代证据。
+- 配置脚本固定系统 wsl.exe，校验官方基础镜像摘要，拒绝已有名称/目录及目录重定向，只配置新建专用发行版，保留原有 Ubuntu。正式 `learnmargin --setup-office` 已从零配置默认 `LearnMargin-Office` 并以退出码 0 完成，随后不设测试覆盖值的默认中文 RTF 转换成功。中文字体与非 root 沙箱探针已实际验证；ARM64 镜像摘要已固定，但没有 ARM64 实机验收。
+- sdist 可构建包含配置脚本、桥接模块、前端及 Skill 的 wheel，隔离安装后能生成五页 A4 示例和 13 个内部链接。测试没有调用付费模型，未操作原有 8765 服务，也没有更改全局 WSL、AppArmor 或 sysctl 配置。每进程资源上限不等于 WSL 虚拟机的合计配额，完整边界见 [SECURITY.md](SECURITY.md)。

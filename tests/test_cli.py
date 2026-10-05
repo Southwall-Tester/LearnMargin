@@ -1,5 +1,8 @@
 import errno
+import os
 import socket
+import subprocess
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -14,6 +17,68 @@ def no_user_environment_or_browser(monkeypatch):
     browser = Mock(return_value=True)
     monkeypatch.setattr(cli.webbrowser, "open", browser)
     return browser
+
+
+def test_explicit_office_setup_never_binds_or_opens_the_app(monkeypatch):
+    setup = Mock()
+    monkeypatch.setattr(cli, "setup_office", setup)
+    monkeypatch.setattr(cli.socket, "socket", Mock(side_effect=AssertionError("Must not start server")))
+    monkeypatch.setattr("sys.argv", ["learnmargin", "--setup-office"])
+    cli.main()
+    setup.assert_called_once_with()
+    assert not cli.webbrowser.open.called
+
+
+def test_office_setup_uses_bundled_script_and_scrubs_credentials(monkeypatch):
+    monkeypatch.setattr(cli, "PLATFORM", "win32")
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-secret")
+    monkeypatch.setenv("WSLENV", "OPENAI_API_KEY")
+    monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "ARM64")
+    run = Mock(return_value=Mock(returncode=0))
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    cli.setup_office()
+    command = run.call_args.args[0]
+    assert command[-1].endswith("setup_windows_office.ps1")
+    environment = run.call_args.kwargs["env"]
+    assert "OPENAI_API_KEY" not in environment and "WSLENV" not in environment
+    assert environment["PROCESSOR_ARCHITECTURE"] == "ARM64"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell executable handling")
+def test_native_setup_handles_scrubbed_environment_without_overwriting(tmp_path):
+    from learnmargin.extraction_worker import worker_environment
+
+    # A pre-existing directory guarantees this invocation stops before any
+    # image download, WSL import or installation. WSL inventory is read-only.
+    distribution = "LearnMargin-Office-Audit-f00d9876"
+    (tmp_path / distribution).mkdir()
+    environment = worker_environment()
+    environment.pop("PATHEXT", None)
+    powershell = (Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell"
+                  / "v1.0" / "powershell.exe")
+    script = Path(__file__).resolve().parents[1] / "scripts" / "setup_windows_office.ps1"
+    completed = subprocess.run(
+        [str(powershell), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+         "-Distribution", distribution, "-StorageRoot", str(tmp_path)],
+        env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    message = completed.stdout.decode("utf-8", errors="replace")
+    assert completed.returncode != 0
+    assert "already exists" in message or "WSL is unavailable" in message
+    assert "$LASTEXITCODE" not in message
+    assert list((tmp_path / distribution).iterdir()) == []
+
+
+def test_office_setup_failure_is_actionable_without_platform_details(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "PLATFORM", "win32")
+    monkeypatch.setattr(cli.subprocess, "run", Mock(side_effect=OSError("private-path-canary")))
+    monkeypatch.setattr("sys.argv", ["learnmargin", "--setup-office"])
+    with pytest.raises(SystemExit) as caught:
+        cli.main()
+    message = capsys.readouterr().err
+    assert caught.value.code == 1 and "PowerShell" in message
+    assert "private-path-canary" not in message
 
 
 def test_occupied_port_exits_clearly_without_opening_browser_or_starting_server(

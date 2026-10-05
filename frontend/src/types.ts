@@ -12,7 +12,8 @@ export type Settings = {
   api: Omit<APIConfig, 'api_key' | 'timeout_seconds'> & { has_api_key: boolean };
   limits: { max_upload_mb: number; max_documents: number };
   formats: string[];
-  capabilities: { libreoffice: boolean; browser: boolean };
+  capabilities: { libreoffice: boolean; browser: boolean; local_office_enabled?: boolean;
+    office_sandbox?: 'windows-wsl' | 'linux-bubblewrap' | null };
   demo_available: boolean;
 };
 

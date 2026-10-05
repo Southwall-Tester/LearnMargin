@@ -34,6 +34,7 @@ def audit_wheel(wheel: Path) -> dict:
         names = archive.namelist()
         audit_names(names)
         assert 'learnmargin/web/index.html' in names
+        assert 'learnmargin/resources/setup_windows_office.ps1' in names
         assert any(name.startswith('learnmargin/web/assets/') and name.endswith('.js') for name in names)
         assert 'learnmargin/resources/skill/SKILL.md' in names
         chapters = set()
@@ -41,7 +42,7 @@ def audit_wheel(wheel: Path) -> dict:
             data = archive.read(name)
             if name.endswith(('book-foundations.md', 'book-practice-memory.md', 'book-mastery-exams.md')):
                 chapters.update(int(value) for value in re.findall(r'(?m)^## 第(\d+)章', data.decode('utf-8')))
-            if name.endswith(('.py', '.md', '.html', '.json', '.yaml', '.toml', '.js', '.css')):
+            if name.endswith(('.py', '.md', '.html', '.json', '.yaml', '.toml', '.js', '.css', '.ps1')):
                 assert not re.search(rb'[A-Za-z]:[\\/]Users[\\/]|1779775642187|pred-2026-H', data), name
                 assert not re.search(rb'sk-[A-Za-z0-9_-]{24,}', data), f'Possible API credential: {name}'
         assert chapters == set(range(1, 19)), chapters
