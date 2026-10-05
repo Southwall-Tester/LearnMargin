@@ -47,7 +47,7 @@ class SectionSourceSupport(Model):
 
 
 class SectionSourceReview(Model):
-    additions: list[SectionSourceSupport] = Field(max_length=8)
+    additions: list[SectionSourceSupport]
 
 
 def parse_range(value: str, total: int) -> list[int]:
@@ -313,7 +313,10 @@ async def generate_lesson(request: GenerateRequest, documents: list[Document], s
         f"输出语言：{request.language}。学习者补充：{request.learner_notes or '未提供'}。\n"
         f"学习范围约束：{topic_constraint}\n"
         f"材料角色和位置：{source_roles}\n"
-        f"编写 {request.section_count} 个章节的讲义计划。先给有实质内容的总览：核心问题、概念含义与联系、"
+        "根据材料内容、概念依赖和理解目标，自主决定章节数量、顺序与粒度。"
+        "一个连贯主题可以只设一节，复杂内容按完整的理解任务组织；不预设章数，"
+        "不按页数、文件数或固定数量拆分，也不为凑章而切断定义、条件与推理。"
+        "先给有实质内容的总览：核心问题、概念含义与联系、"
         "必要基础、逐段目标。不能只有目录或让读者自己总结未知材料。每个章节指定实际材料引用。"
         "将补足前置定义和所依赖结论的参考页分配给真正使用它的章节；"
         "不能只在前一节列名，后节却未经解释就使用。"
@@ -338,15 +341,15 @@ async def generate_lesson(request: GenerateRequest, documents: list[Document], s
         missing, invalid = set(chosen) - set(refs), set(refs) - set(chosen)
         ids = [section.id for section in plan.sections]
         if (not missing and not invalid and len(ids) == len(set(ids))
-                and len(plan.sections) == request.section_count
                 and (not primary_refs or all(set(section.source_refs) & primary_refs for section in plan.sections))
                 and all(1 <= c <= 18 for c in plan.method_chapters)):
             break
         if attempt == 2:
-            raise ValueError("模型生成的学习计划未覆盖所选材料，或章节数量及引用不正确。请缩小范围后重试。")
+            raise ValueError("模型生成的学习计划未覆盖所选材料，或章节编号及引用不正确。请重新生成。")
         plan = await provider.generate(LessonPlan, BASE_SYSTEM,
             prompt + f"\n校验发现遗漏位置{sorted(missing)}，无效位置{sorted(invalid)}。"
-            f"请重做计划，恰好{request.section_count}个章节，章节id唯一，方法章节编号1～18。", images)
+            "请修复覆盖与引用，章节id唯一，页码模式每节含主材料，方法章节编号1～18。"
+            "章节组织仍由内容和概念依赖决定，可以保留或调整，不要求固定数量。", images)
     # Check evidence across the complete selected material before isolating each
     # writer's context. Later statements can support an earlier introduction;
     # passing only the original refs would make that information inaccessible.

@@ -34,7 +34,7 @@ def main():
             "mode": "pages", "ranges": {documents[0]["id"]: "1"}}
         response = client.post("/api/jobs", json={"document_ids": [doc["id"] for doc in documents], "api": api,
             "scope": scope,
-            "section_count": 2, "layout": "a4", "learner_notes": "基础较弱，解释分母与公式条件。侧栏提示少而具体。"})
+            "layout": "a4", "learner_notes": "基础较弱，解释分母与公式条件。侧栏提示少而具体。"})
         response.raise_for_status()
         job = response.json()
         print(json.dumps({"job_id": job["id"], "model": api["model"]}, ensure_ascii=False), flush=True)

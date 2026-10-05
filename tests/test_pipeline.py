@@ -6,7 +6,7 @@ import pytest
 
 from learnmargin import pipeline
 from learnmargin.localization import chinese_lesson_text
-from learnmargin.models import APIConfig, Document, GenerateRequest, Scope, SourceUnit
+from learnmargin.models import APIConfig, Document, GenerateRequest, LessonPlan, Scope, SourceUnit
 from learnmargin.pipeline import generate_lesson, make_units, parse_range, source_content
 from learnmargin.storage import Store
 from learnmargin.study_rhythm import plan_pauses
@@ -99,8 +99,7 @@ def workspace(tmp_path):
 
 
 def request(**kwargs):
-    return GenerateRequest(document_ids=[DOC_ID], section_count=2,
-                           api=APIConfig(vision=False), **kwargs)
+    return GenerateRequest(document_ids=[DOC_ID], api=APIConfig(vision=False), **kwargs)
 
 
 @pytest.mark.parametrize("language", ["", "   ", "\n\t", "x" * 81])
@@ -279,13 +278,76 @@ async def test_successful_final_plan_repair_is_actually_validated(workspace):
     assert [name for name, *_ in provider.calls].count("GeneratedLessonSection") == 4
 
 
-async def test_plan_must_honor_requested_number_of_sections(workspace):
+def automatically_grouped_plan(count):
+    planned = plan()
+    refs = [f"{DOC_ID}:1", f"{DOC_ID}:2"]
+    planned["sections"] = [{"id": f"s{index}", "title": f"概念关系 {index}",
+        "objective": "结合定义与条件理解本节概念关系",
+        "source_refs": refs.copy() if count == 1 else [refs[(index - 1) % 2]]}
+        for index in range(1, count + 1)]
+    drafts, additions = [], []
+    for index, item in enumerate(planned["sections"], 1):
+        draft = section(index)
+        extra_refs = [ref for ref in refs if ref not in item["source_refs"]]
+        draft["source_refs"] = [*item["source_refs"], *extra_refs]
+        drafts.append(draft)
+        if extra_refs:
+            additions.append({"section_id": item["id"], "source_refs": extra_refs,
+                              "reason": "本节需要另一页的条件来完整说明概念关系。"})
+    return planned, drafts, {"additions": additions}
+
+
+@pytest.mark.parametrize("count", [1, 12])
+async def test_model_chapter_count_flows_through_support_writing_progress_and_output(workspace, count):
     store, output = workspace
-    provider = SequenceProvider([plan(), plan(), plan()])
-    four_sections = GenerateRequest(document_ids=[DOC_ID], section_count=4, api=APIConfig(vision=False))
-    with pytest.raises(ValueError, match="计划|章节"):
-        await generate_lesson(four_sections, [document()], store, output, provider, lambda *_: None)
-    assert len(provider.calls) == 3
+    planned, drafts, support = automatically_grouped_plan(count)
+    provider = SequenceProvider([planned, *drafts], source_support=support)
+    progress = []
+    lesson = await generate_lesson(request(section_count=4), [document()], store, output, provider,
+                                   lambda label, value: progress.append((label, value)))
+    expected_ids = [item["id"] for item in planned["sections"]]
+    assert [item.id for item in lesson.sections] == expected_ids
+    saved_plan = json.loads((output / "plan.json").read_text(encoding="utf-8"))
+    assert [item["id"] for item in saved_plan["sections"]] == expected_ids
+    assert [label for label, _ in progress if label.startswith("完成讲解")] == [
+        f"完成讲解 {index}/{count}" for index in range(1, count + 1)]
+    assert [value for _, value in progress] == sorted(value for _, value in progress)
+    assert progress[-1] == (f"完成讲解 {count}/{count}", 80)
+    writing_calls = [call for call in provider.calls if call[0] == "GeneratedLessonSection"]
+    assert len(writing_calls) == count * 2
+    for index, completed in enumerate(lesson.sections, 1):
+        expected_refs = drafts[index - 1]["source_refs"]
+        assert completed.source_refs == expected_refs
+        status = json.loads((output / f"section-{index}-status.json").read_text(encoding="utf-8"))
+        assert status == {"section": index, "total": count, "stage": "审校", "status": "completed"}
+        saved = json.loads((output / f"section-{index}.json").read_text(encoding="utf-8"))
+        assert saved == completed.model_dump()
+    for _, prompt, _ in writing_calls:
+        writing_plan = json.JSONDecoder().raw_decode(prompt.split("本节计划：", 1)[1])[0]
+        assert writing_plan["source_refs"] == drafts[expected_ids.index(writing_plan["id"])]["source_refs"]
+    audit = json.loads((output / "section-source-review.json").read_text(encoding="utf-8"))
+    assert audit["additions"] == support["additions"]
+    assert len(audit["additions"]) == (count if count > 1 else 0)
+
+
+@pytest.mark.parametrize("count", [1, 12])
+async def test_plan_coverage_repair_can_change_model_chapter_count(workspace, count):
+    store, output = workspace
+    repaired, drafts, support = automatically_grouped_plan(count)
+    provider = SequenceProvider([plan(missing=True), repaired, *drafts], source_support=support)
+    lesson = await generate_lesson(request(), [document()], store, output, provider, lambda *_: None)
+    assert len(lesson.sections) == count
+    planning_calls = [call for call in provider.calls if call[0] == "LessonPlan"]
+    assert len(planning_calls) == 2
+    assert f"{DOC_ID}:2" in planning_calls[1][1]
+    assert "不要求固定数量" in planning_calls[1][1]
+
+
+def test_automatic_plan_still_requires_teaching_content():
+    empty = plan()
+    empty["sections"] = []
+    with pytest.raises(ValueError):
+        LessonPlan.model_validate(empty)
 
 
 async def test_section_cannot_change_approved_reference(workspace):
@@ -395,7 +457,7 @@ class IntegrationProvider:
 
 
 def multiple_request(*, mode="pages", ranges=None, include_prerequisites=True):
-    return GenerateRequest(document_ids=[DOC_ID, REFERENCE_ID], section_count=2,
+    return GenerateRequest(document_ids=[DOC_ID, REFERENCE_ID],
                            api=APIConfig(vision=False), scope=Scope(mode=mode,
                                ranges=ranges if ranges is not None else {DOC_ID: "2"},
                                topics="条件概率" if mode == "topics" else "",
@@ -550,7 +612,7 @@ async def test_review_receives_actual_material_images_and_final_output_uses_revi
         return draft
 
     provider = SequenceProvider([plan(), section(1), section(2)], revise=revise)
-    parameters = GenerateRequest(document_ids=[DOC_ID], section_count=2, api=APIConfig(vision=True))
+    parameters = GenerateRequest(document_ids=[DOC_ID], api=APIConfig(vision=True))
     lesson = await generate_lesson(parameters, [source], store, output, provider, lambda *_: None)
     assert len(provider.reviews) == 2
     for draft, prompt, pictures in provider.reviews:
@@ -719,7 +781,7 @@ async def test_page_search_only_transcribes_selected_scan_references_and_keeps_p
             return await super().generate(schema, system, user, images)
 
     provider = ScanProvider(expected, selections=[[f"{DOC_ID}:1"]])
-    parameters = GenerateRequest(document_ids=[DOC_ID], section_count=2, api=APIConfig(vision=True),
+    parameters = GenerateRequest(document_ids=[DOC_ID], api=APIConfig(vision=True),
                                  scope=Scope(mode="pages", ranges={DOC_ID: "2"}))
     lesson = await generate_lesson(parameters, [main], store, output, provider, lambda *_: None)
     ocr_calls = [call for call in provider.calls if call[0] == "PageTranscription"]

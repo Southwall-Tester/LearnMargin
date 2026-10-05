@@ -60,9 +60,16 @@ class GenerateRequest(Model):
     api: APIConfig = Field(default_factory=APIConfig)
     learner_notes: str = Field(default="", max_length=2000)
     language: str = Field(default="简体中文", min_length=1, max_length=80)
-    section_count: int = Field(default=4, ge=2, le=8)
     layout: Literal["a4", "wide"] = "a4"
     reading_mode: Literal["auto", "handwritten"] = "auto"
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_section_count(cls, value):
+        """Old clients may send this control; it no longer constrains planning."""
+        if isinstance(value, dict) and "section_count" in value:
+            return {key: item for key, item in value.items() if key != "section_count"}
+        return value
 
     @field_validator("language")
     @classmethod
@@ -97,7 +104,7 @@ class LessonPlan(Model):
     subtitle: str
     text: LessonText
     overview: Overview
-    sections: list[PlannedSection] = Field(min_length=2, max_length=8)
+    sections: list[PlannedSection] = Field(min_length=1)
     review_plan: list[str] = Field(min_length=1, max_length=8)
     method_chapters: list[int] = Field(min_length=1, max_length=8)
 
