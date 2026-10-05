@@ -40,10 +40,12 @@ def test_worker_environment_is_an_allowlist_and_keeps_office_opt_in(monkeypatch)
     monkeypatch.setenv("HTTPS_PROXY", "https://fake-credential@proxy.example")
     monkeypatch.setenv("PYTHONPATH", "untrusted-python-directory")
     monkeypatch.setenv("LEARNMARGIN_ALLOW_LOCAL_OFFICE", "1")
+    monkeypatch.setenv("LEARNMARGIN_OFFICE_WSL_DISTRIBUTION", "LearnMargin-Office")
     result = worker.worker_environment()
     assert "fake-key" not in json.dumps(result)
     assert "HTTPS_PROXY" not in result and "PYTHONPATH" not in result
     assert result["LEARNMARGIN_ALLOW_LOCAL_OFFICE"] == "1"
+    assert result["LEARNMARGIN_OFFICE_WSL_DISTRIBUTION"] == "LearnMargin-Office"
     assert result["LEARNMARGIN_EXTRACTION_WORKER"] == "1"
 
 
@@ -151,6 +153,33 @@ async def test_cancellation_stops_owned_worker(tmp_path, monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await task
     assert limiter.closed and stopped == [process]
+
+
+async def test_repeated_cancellation_waits_for_owned_cleanup(tmp_path, monkeypatch):
+    process, limiter, _ = fake_worker(monkeypatch)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def cleanup(actual, actual_limiter):
+        assert actual is process and actual_limiter is limiter
+        entered.set()
+        await release.wait()
+        limiter.close()
+
+    monkeypatch.setattr(worker, "_terminate_worker", cleanup)
+    task = asyncio.create_task(extract_in_worker(tmp_path / "source.txt", tmp_path / "out", "sample"))
+    while not process.stdin.written:
+        await asyncio.sleep(0)
+    task.cancel()
+    await entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done() and not limiter.closed
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert limiter.closed
 
 
 async def test_cancellation_while_spawning_does_not_lose_child(tmp_path, monkeypatch):

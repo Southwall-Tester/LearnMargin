@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -163,7 +164,8 @@ def _terminate(process: subprocess.Popen) -> None:
     process.wait(timeout=10)
 
 
-def _run(command: list[str], timeout: float, *, limit: int) -> bytes:
+def _run(command: list[str], timeout: float, *, limit: int,
+         cancelled: Callable[[], bool] | None = None) -> bytes:
     deadline = time.monotonic() + timeout
     output = bytearray()
     # Never inherit LD_PRELOAD, PYTHONPATH, credentials or open descriptors.
@@ -180,10 +182,12 @@ def _run(command: list[str], timeout: float, *, limit: int) -> bytes:
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
             while selector.get_map():
+                if cancelled is not None and cancelled():
+                    raise SandboxConversionError("隔离转换已取消。")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise SandboxConversionError("隔离转换超时，请拆分材料或先导出 PDF。")
-                for key, _ in selector.select(remaining):
+                for key, _ in selector.select(min(remaining, 0.2) if cancelled else remaining):
                     chunk = os.read(key.fileobj.fileno(), min(65536, limit - len(output) + 1))
                     if not chunk:
                         selector.unregister(key.fileobj)
@@ -191,10 +195,17 @@ def _run(command: list[str], timeout: float, *, limit: int) -> bytes:
                         output.extend(chunk)
                         if len(output) > limit:
                             raise SandboxConversionError("转换后的 PDF 超过 50 MB，请拆分材料。")
-            try:
-                result = process.wait(timeout=max(0.001, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                raise SandboxConversionError("隔离转换超时，请拆分材料或先导出 PDF。") from None
+            while process.poll() is None:
+                if cancelled is not None and cancelled():
+                    raise SandboxConversionError("隔离转换已取消。")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise SandboxConversionError("隔离转换超时，请拆分材料或先导出 PDF。")
+                try:
+                    process.wait(timeout=min(remaining, 0.2) if cancelled else remaining)
+                except subprocess.TimeoutExpired:
+                    continue
+            result = process.returncode
             if result:
                 raise SandboxConversionError("隔离转换失败；请检查沙箱支持，或用原应用导出 PDF。")
         return bytes(output)
@@ -228,7 +239,8 @@ def static_linux_support(executable: str | None = None) -> bool:
 
 
 def run_linux_conversion(executable: str, input_file: Path, output_file: Path,
-                         *, timeout: float = 120) -> None:
+                         *, timeout: float = 120,
+                         cancelled: Callable[[], bool] | None = None) -> None:
     """Write one PDF after successful isolation, bounded conversion and output."""
     input_file, output_file = Path(input_file), Path(output_file)
     if (input_file.is_symlink() or not input_file.is_file()
@@ -239,7 +251,8 @@ def run_linux_conversion(executable: str, input_file: Path, output_file: Path,
     command = _sandbox_command(runtime, [runtime.python, "-I", "-S", "-c", _CONVERT,
                                        runtime.office, f"/input/source{input_file.suffix.lower()}"],
                                input_file.resolve())
-    data = _run(command, timeout, limit=MAX_PDF_BYTES)
+    options = {"cancelled": cancelled} if cancelled is not None else {}
+    data = _run(command, timeout, limit=MAX_PDF_BYTES, **options)
     if not data.startswith(b"%PDF-"):
         raise SandboxConversionError("LibreOffice 未能生成有效 PDF，请用原应用重新导出。")
     # The caller owns a new work directory. Exclusive creation also prevents

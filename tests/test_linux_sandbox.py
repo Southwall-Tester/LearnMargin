@@ -321,3 +321,36 @@ def test_real_linux_libreoffice_rtf_conversion(tmp_path, real_runtime):
     document = PdfReader(output)
     assert len(document.pages) >= 1
     assert "LearnMargin sandbox conversion test" in "".join(page.extract_text() for page in document.pages)
+
+
+def test_real_linux_rtf_upload_runs_worker_dispatcher_and_pdf_extraction(tmp_path, real_runtime, monkeypatch):
+    if not (shutil.which("libreoffice") or shutil.which("soffice")):
+        if os.environ.get("LEARNMARGIN_REQUIRE_SANDBOX_TESTS") == "1":
+            pytest.fail("Required LibreOffice is not installed")
+        pytest.skip("System LibreOffice is not installed")
+    from fastapi.testclient import TestClient
+
+    from learnmargin.app import create_app
+
+    monkeypatch.setenv("LEARNMARGIN_ALLOW_LOCAL_OFFICE", "1")
+    application = create_app(tmp_path / "isolated-app-data")
+    with TestClient(application) as client:
+        uploaded = client.post("/api/documents", files={
+            "file": ("synthetic.rtf", b"{\\rtf1\\ansi LearnMargin sandbox upload integration test.}",
+                     "application/rtf"),
+        })
+        assert uploaded.status_code == 201, uploaded.text
+        document_id = uploaded.json()["id"]
+        unit = client.get(f"/api/documents/{document_id}/units/1")
+        assert unit.status_code == 200
+        assert "LearnMargin sandbox upload integration test" in unit.json()["text"]
+        images = unit.json()["images"]
+        assert images
+        document = application.state.store.document(document_id)
+        folder = application.state.store.directory("documents", document_id)
+        assert all((folder / name).is_file() for name in document.units[0].image_paths)
+        for url in images:
+            image = client.get(url)
+            assert image.status_code == 200
+            assert image.headers["content-type"] == "image/png"
+            assert image.content.startswith(b"\x89PNG\r\n\x1a\n")

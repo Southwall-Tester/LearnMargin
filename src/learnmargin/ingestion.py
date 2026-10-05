@@ -6,10 +6,8 @@ import os
 import posixpath
 import re
 import shutil
-import signal
 import stat
 import struct
-import subprocess
 import tempfile
 import warnings
 import zipfile
@@ -23,6 +21,7 @@ from bs4 import BeautifulSoup
 from PIL import Image, ImageOps
 
 from .models import Document, SourceUnit
+from .office_sandbox import OfficeSandboxError, convert_office
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 250 * 1024 * 1024
@@ -476,68 +475,29 @@ def _text(path: Path, kind: str, result: _Collector) -> None:
     result.warn("文本文件按连续内容段划分，段号不是页码。")
 
 
-def _run_converter(command: list[str]) -> int:
-    """Bound the conversion process tree, including LibreOffice's child process."""
-    in_worker = os.environ.get("LEARNMARGIN_EXTRACTION_WORKER") == "1"
-    options = ({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt"
-               else {"start_new_session": not in_worker})
-    with subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **options) as process:
-        try:
-            return process.wait(timeout=CONVERSION_TIMEOUT)
-        except subprocess.TimeoutExpired as exc:
-            if os.name == "nt":
-                # The PID belongs to the subprocess just created here, never a user's Office session.
-                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                               capture_output=True, check=False, timeout=10,
-                               creationflags=subprocess.CREATE_NO_WINDOW)
-            elif not in_worker:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            process.kill()
-            process.wait(timeout=10)
-            raise IngestionError("LibreOffice 转换超过 120 秒，请自行导出 PDF 或拆分材料。") from exc
-
-
 def _legacy(path: Path, kind: str, result: _Collector) -> None:
     if not local_office_enabled():
-        raise IngestionError("旧格式转换默认关闭，请先导出 PDF 后导入；可信文件可由本机配置启用。")
+        raise IngestionError("旧格式转换默认关闭，请先导出 PDF 后导入；可由本机配置启用沙箱转换。")
     executable = find_libreoffice()
-    if not executable:
-        raise IngestionError(f"读取 {kind} 需要 LibreOffice。请安装 LibreOffice，或先用 Office 导出为 PDF/PPTX/DOCX 再上传。")
-    if kind in {".odt", ".odp"}:
-        _check_zip(path)
-    with tempfile.TemporaryDirectory(prefix="learnmargin-convert-") as directory:
+    # The converter receives the original bytes inside OS isolation. Do not
+    # invoke any legacy-format parser/converter in the host as a fallback.
+    # Keep staging under this import so the parent can remove it even if the
+    # extraction worker is forcibly terminated before Python finally blocks run.
+    with tempfile.TemporaryDirectory(prefix="learnmargin-converted-", dir=result.output) as directory:
         work = Path(directory)
-        profile = work / "profile"
-        profile.mkdir()
-        # A dedicated profile avoids reusing a user's Office session; level 3 disables macros.
-        (profile / "user").mkdir()
-        (profile / "user" / "registrymodifications.xcu").write_text(
-            '<?xml version="1.0" encoding="UTF-8"?><oor:items xmlns:oor="http://openoffice.org/2001/registry">'
-            '<item oor:path="/org.openoffice.Office.Common/Security/Scripting">'
-            '<prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop>'
-            '</item><item oor:path="/org.openoffice.Office.Common/Load">'
-            '<prop oor:name="Update" oor:op="fuse"><value>0</value></prop></item></oor:items>',
-            encoding="utf-8",
-        )
         input_file = work / f"source{kind}"
         shutil.copyfile(path, input_file)
-        command = [executable, f"-env:UserInstallation={profile.as_uri()}", "--headless",
-                   "--nologo", "--nodefault", "--nolockcheck", "--norestore",
-                   "--convert-to", "pdf", "--outdir", str(work), str(input_file)]
-        try:
-            return_code = _run_converter(command)
-        except OSError as exc:
-            raise IngestionError("无法启动 LibreOffice，请检查安装或自行导出为 PDF。") from exc
         converted = work / "source.pdf"
-        if return_code != 0 or not converted.is_file():
+        try:
+            convert_office(executable, input_file, converted, timeout=CONVERSION_TIMEOUT)
+        except OfficeSandboxError as error:
+            raise IngestionError(str(error)) from None
+        if not converted.is_file():
             raise IngestionError("LibreOffice 未能转换材料，请用原应用导出为 PDF 后上传。")
         if converted.stat().st_size > MAX_UPLOAD_BYTES:
             raise IngestionError("转换后的 PDF 超过 50 MB，请拆分材料。")
         _pdf(converted, result)
-        result.warn("此文件已通过本机 LibreOffice 转为 PDF；页码指转换结果，字体与分页可能不同于原应用。")
+        result.warn("此文件已通过沙箱中的 LibreOffice 转为 PDF；页码指转换结果，字体与分页可能不同于原应用。")
 
 
 def extract_document(path: Path, output_dir: Path, document_id: str,

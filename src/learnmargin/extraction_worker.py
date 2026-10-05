@@ -8,6 +8,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -34,7 +35,7 @@ def worker_environment() -> dict[str, str]:
         "PATH", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC", "TEMP", "TMP", "TMPDIR",
         "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
         "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "LANG", "LC_ALL", "LC_CTYPE",
-        "LEARNMARGIN_ALLOW_LOCAL_OFFICE",
+        "LEARNMARGIN_ALLOW_LOCAL_OFFICE", "LEARNMARGIN_OFFICE_WSL_DISTRIBUTION",
     }
     result = {key: value for key, value in os.environ.items() if key.upper() in allowed}
     result["LEARNMARGIN_EXTRACTION_WORKER"] = "1"
@@ -69,6 +70,14 @@ class _WindowsJob:
                 ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t),
             ]
 
+        class Accounting(ctypes.Structure):
+            _fields_ = [
+                ("TotalUserTime", ctypes.c_longlong), ("TotalKernelTime", ctypes.c_longlong),
+                ("ThisPeriodTotalUserTime", ctypes.c_longlong), ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                ("TotalPageFaultCount", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
+                ("ActiveProcesses", wintypes.DWORD), ("TotalTerminatedProcesses", wintypes.DWORD),
+            ]
+
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
         kernel.CreateJobObjectW.restype = wintypes.HANDLE
@@ -78,9 +87,15 @@ class _WindowsJob:
         kernel.OpenProcess.restype = wintypes.HANDLE
         kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
         kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel.TerminateJobObject.restype = wintypes.BOOL
+        kernel.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                                     wintypes.DWORD, ctypes.c_void_p]
+        kernel.QueryInformationJobObject.restype = wintypes.BOOL
         kernel.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel.CloseHandle.restype = wintypes.BOOL
         self.kernel = kernel
+        self.accounting_type = Accounting
         self.handle = kernel.CreateJobObjectW(None, None)
         if not self.handle:
             raise ExtractionError(LIMIT_ERROR)
@@ -108,8 +123,26 @@ class _WindowsJob:
 
     def close(self) -> None:
         if self.handle:
-            self.kernel.CloseHandle(self.handle)
-            self.handle = None
+            import ctypes
+            try:
+                if not self.kernel.TerminateJobObject(self.handle, 1):
+                    raise ExtractionError("无法确认文档解析进程已停止，请稍后重试。")
+                deadline = time.monotonic() + 5
+                while True:
+                    accounting = self.accounting_type()
+                    if not self.kernel.QueryInformationJobObject(self.handle, 1, ctypes.byref(accounting),
+                                                                 ctypes.sizeof(accounting), None):
+                        raise ExtractionError("无法确认文档解析进程已停止，请稍后重试。")
+                    if accounting.ActiveProcesses == 0:
+                        break
+                    if time.monotonic() >= deadline:
+                        raise ExtractionError("无法确认文档解析进程已停止，请稍后重试。")
+                    time.sleep(0.01)
+            finally:
+                # KILL_ON_JOB_CLOSE remains the final backstop even if querying
+                # completion failed. A failure never counts as confirmed death.
+                self.kernel.CloseHandle(self.handle)
+                self.handle = None
 
 
 def _create_limiter() -> _WindowsJob | None:
@@ -144,8 +177,14 @@ async def _read_result(stream: asyncio.StreamReader) -> bytes:
 
 async def _terminate_worker(process, limiter) -> None:
     # Closing our private job kills any remaining descendants, even on success.
+    limit_error = None
     if limiter is not None:
-        limiter.close()
+        try:
+            limiter.close()
+        except Exception as error:
+            # Still reap the owned process and close its pipes. The caller must
+            # preserve journals as unconfirmed even when these steps succeed.
+            limit_error = error
     if not WINDOWS:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
@@ -164,6 +203,19 @@ async def _terminate_worker(process, limiter) -> None:
         await process.wait()
 
     await asyncio.wait_for(reap(), timeout=10)
+    if limit_error is not None:
+        raise limit_error
+
+
+async def _settle_owned_task(task):
+    """Repeated cancellation must not abandon a just-spawned child or cleanup."""
+    interrupted = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            interrupted = True
+    return task.result(), interrupted
 
 
 async def extract_in_worker(path: Path, output: Path, item_id: str, name: str | None = None) -> Document:
@@ -217,18 +269,18 @@ async def extract_in_worker(path: Path, output: Path, item_id: str, name: str | 
     except (OSError, RuntimeError):
         raise ExtractionError(LIMIT_ERROR) from None
     finally:
+        late_cancelled = False
         if process is None and spawn_task is not None:
             with contextlib.suppress(Exception):
-                process = await spawn_task
+                process, late_cancelled = await _settle_owned_task(spawn_task)
         if process is not None:
             cleanup = asyncio.create_task(_terminate_worker(process, limiter))
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                await cleanup
-                raise
+            _, interrupted = await _settle_owned_task(cleanup)
+            late_cancelled |= interrupted
         elif limiter is not None:
             limiter.close()
+        if late_cancelled:
+            raise asyncio.CancelledError
 
 
 def _worker_main() -> int:

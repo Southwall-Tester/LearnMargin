@@ -7,7 +7,6 @@ import subprocess
 import zipfile
 import zlib
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from docx import Document as WordDocument
@@ -215,6 +214,9 @@ def test_images_are_bounded_and_tiff_preserves_frames(tmp_path, monkeypatch):
 
 
 def test_legacy_missing_dependency_and_timeout_are_actionable(tmp_path, monkeypatch):
+    from learnmargin import office_sandbox
+
+    monkeypatch.setattr(office_sandbox, "PLATFORM", "linux")
     monkeypatch.setenv("LEARNMARGIN_ALLOW_LOCAL_OFFICE", "1")
     source = tmp_path / "old.doc"
     source.write_bytes(b"old document fixture")
@@ -223,44 +225,46 @@ def test_legacy_missing_dependency_and_timeout_are_actionable(tmp_path, monkeypa
         extract_document(source, tmp_path / "out", "old")
     monkeypatch.setattr(ingestion, "find_libreoffice", lambda: "soffice")
 
-    def timeout(command):
-        assert "--headless" in command
-        raise IngestionError("LibreOffice 转换超过 120 秒，请自行导出 PDF 或拆分材料。")
+    def timeout(executable, input_file, output_file, **kwargs):
+        assert input_file.suffix == ".doc" and kwargs["timeout"] == 120
+        raise ingestion.OfficeSandboxError("LibreOffice 隔离转换超过 120 秒，请自行导出 PDF 或拆分材料。")
 
-    monkeypatch.setattr(ingestion, "_run_converter", timeout)
+    monkeypatch.setattr(ingestion, "convert_office", timeout)
     with pytest.raises(IngestionError, match="120 秒"):
         extract_document(source, tmp_path / "out", "old")
 
 
-def test_converter_timeout_terminates_only_its_own_process_tree(monkeypatch):
-    calls = []
+def test_sandbox_failure_does_not_fall_back_to_host_conversion(tmp_path, monkeypatch):
+    source = tmp_path / "old.rtf"
+    source.write_text(r"{\rtf1 synthetic fixture}")
+    monkeypatch.setenv("LEARNMARGIN_ALLOW_LOCAL_OFFICE", "1")
+    monkeypatch.setattr(ingestion, "find_libreoffice", lambda: "soffice")
 
-    class Process:
-        pid = 123456
+    def refuse(*args, **kwargs):
+        raise ingestion.OfficeSandboxError("无法建立转换沙箱。")
 
-        def __enter__(self):
-            return self
+    monkeypatch.setattr(ingestion, "convert_office", refuse)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: pytest.fail("unsafe converter fallback"))
+    with pytest.raises(IngestionError, match="沙箱"):
+        extract_document(source, tmp_path / "out", "old")
 
-        def __exit__(self, *args):
-            return False
 
-        def wait(self, timeout):
-            if timeout == 120:
-                raise subprocess.TimeoutExpired("soffice", timeout)
-            return -1
+def test_legacy_import_reads_sandbox_result_and_preserves_original_extension(tmp_path, monkeypatch):
+    source = tmp_path / "upload.data"
+    source.write_bytes(b"synthetic old document")
+    monkeypatch.setenv("LEARNMARGIN_ALLOW_LOCAL_OFFICE", "1")
+    monkeypatch.setattr(ingestion, "find_libreoffice", lambda: "soffice")
 
-        def kill(self):
-            calls.append("kill")
+    def convert(executable, input_file, output_file, **kwargs):
+        assert input_file.suffix == ".doc" and input_file.read_bytes() == source.read_bytes()
+        assert not output_file.exists() and kwargs["timeout"] == 120
+        make_pdf(output_file)
 
-    monkeypatch.setattr(ingestion.subprocess, "Popen", lambda *args, **kwargs: Process())
-    if ingestion.os.name == "nt":
-        monkeypatch.setattr(ingestion.subprocess, "run", lambda command, **kwargs: calls.append(command))
-    else:
-        monkeypatch.setattr(ingestion.os, "killpg", lambda pid, sig: calls.append(["group", pid]))
-    with pytest.raises(IngestionError, match="120 秒"):
-        ingestion._run_converter(["soffice", "--headless"])
-    assert "kill" in calls
-    assert any("123456" in str(call) for call in calls)
+    monkeypatch.setattr(ingestion, "convert_office", convert)
+    result = extract_document(source, tmp_path / "out", "old", "lecture.doc")
+    assert result.unit_label == "转换后页" and len(result.units) == 2
+    assert "Conditional probability" in result.units[0].text
+    assert any("沙箱" in warning for warning in result.warnings)
 
 
 @pytest.mark.parametrize("name,content,message", [
@@ -377,44 +381,6 @@ def test_legacy_conversion_requires_explicit_local_opt_in(tmp_path, monkeypatch,
     source = tmp_path / "old.doc"
     source.write_bytes(b"synthetic old document")
     monkeypatch.setattr(ingestion, "find_libreoffice", lambda: pytest.fail("converter should not be consulted"))
-    monkeypatch.setattr(ingestion, "_run_converter", lambda *_: pytest.fail("converter must not be started"))
+    monkeypatch.setattr(ingestion, "convert_office", lambda *_: pytest.fail("converter must not be started"))
     with pytest.raises(IngestionError, match="默认关闭"):
         extract_document(source, tmp_path / "out", "old")
-
-
-@pytest.mark.parametrize("in_worker", [False, True])
-def test_unix_converter_stays_in_extraction_workers_process_group(monkeypatch, in_worker):
-    calls = []
-
-    class Process:
-        pid = 123456
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def wait(self, timeout):
-            if timeout == ingestion.CONVERSION_TIMEOUT:
-                raise subprocess.TimeoutExpired("soffice", timeout)
-            return -1
-
-        def kill(self):
-            calls.append("kill")
-
-    def start(command, **kwargs):
-        assert kwargs["start_new_session"] is not in_worker
-        return Process()
-
-    # Mock only ingestion's OS view, so this Unix process-lifecycle regression
-    # also runs on Windows without changing pathlib/pytest's global platform.
-    monkeypatch.setattr(ingestion, "os", SimpleNamespace(
-        name="posix", environ={"LEARNMARGIN_EXTRACTION_WORKER": "1" if in_worker else "0"},
-        killpg=lambda pid, signal: calls.append("kill group")))
-    monkeypatch.setattr(ingestion, "signal", SimpleNamespace(SIGKILL=9))
-    monkeypatch.setattr(ingestion.subprocess, "Popen", start)
-    with pytest.raises(IngestionError, match="120 秒"):
-        ingestion._run_converter(["soffice", "--headless"])
-    assert ("kill group" in calls) is not in_worker
-    assert "kill" in calls
