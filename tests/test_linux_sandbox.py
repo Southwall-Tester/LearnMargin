@@ -295,6 +295,8 @@ except sandbox.SandboxConversionError as error:
 
 
 def test_real_linux_libreoffice_rtf_conversion(tmp_path, real_runtime):
+    from pypdf import PdfReader
+
     executable = shutil.which("libreoffice") or shutil.which("soffice")
     if not executable:
         if os.environ.get("LEARNMARGIN_REQUIRE_SANDBOX_TESTS") == "1":
@@ -302,6 +304,20 @@ def test_real_linux_libreoffice_rtf_conversion(tmp_path, real_runtime):
         pytest.skip("System LibreOffice is not installed")
     source, output = tmp_path / "source.rtf", tmp_path / "result.pdf"
     source.write_bytes(b"{\\rtf1\\ansi LearnMargin sandbox conversion test.}")
-    sandbox.run_linux_conversion(executable, source, output)
+    try:
+        sandbox.run_linux_conversion(executable, source, output)
+    except sandbox.SandboxConversionError:
+        # Diagnostics use only this known synthetic RTF and the identical
+        # namespace policy. Production conversion never exposes parser stderr.
+        runtime = sandbox._runtime(executable)
+        driver = sandbox._CONVERT.replace("stderr=subprocess.DEVNULL", "stderr=None")
+        command = sandbox._sandbox_command(runtime, [runtime.python, "-I", "-S", "-c", driver,
+                                                   runtime.office, "/input/source.rtf"], source)
+        probe = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                               env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}, timeout=15)
+        pytest.fail(f"Synthetic LibreOffice conversion failed: {probe.stderr.decode(errors='replace')[:3000]}")
     assert output.read_bytes().startswith(b"%PDF-")
     assert output.stat().st_size > 100
+    document = PdfReader(output)
+    assert len(document.pages) >= 1
+    assert "LearnMargin sandbox conversion test" in "".join(page.extract_text() for page in document.pages)

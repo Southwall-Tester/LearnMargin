@@ -125,11 +125,18 @@ profile.mkdir(parents=True)
     '<item oor:path="/org.openoffice.Office.Common/Load">'
     '<prop oor:name="Update" oor:op="fuse"><value>0</value></prop></item></oor:items>',
     encoding='utf-8')
-completed = subprocess.run([sys.argv[1], '-env:UserInstallation=file:///home/profile',
+command = [sys.argv[1], '-env:UserInstallation=file:///home/profile',
     '--headless', '--nologo', '--nodefault', '--nolockcheck', '--norestore',
-    '--convert-to', 'pdf', '--outdir', '/work', sys.argv[2]],
-    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    '--convert-to', 'pdf', '--outdir', '/work', sys.argv[2]]
+# soffice.bin can request one normal restart after profile initialization.
+# Preserve the same namespace/profile and the parent's single time budget.
+for attempt in range(2):
+    completed = subprocess.run(command, stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if completed.returncode != 81:
+        break
 if completed.returncode:
+    print('LibreOffice exit code:', completed.returncode, file=sys.stderr)
     sys.exit(2)
 fd = os.open('/work/source.pdf', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
 with os.fdopen(fd, 'rb') as result:
