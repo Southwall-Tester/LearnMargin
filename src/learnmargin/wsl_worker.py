@@ -12,12 +12,14 @@ import math
 import os
 import selectors
 import shutil
+import signal
 import stat
 import struct
 import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 MAX_BYTES = 50 * 1024 * 1024
@@ -54,12 +56,15 @@ def _header(data: bytes) -> dict:
     return value
 
 
-def _read_exact(fd: int, size: int, deadline: float) -> bytes:
+def _read_exact(fd: int, size: int, deadline: float,
+                cancelled: Callable[[], bool] | None = None) -> bytes:
     result = bytearray()
     last_progress = time.monotonic()
     with selectors.DefaultSelector() as selector:
         selector.register(fd, selectors.EVENT_READ)
         while len(result) < size:
+            if cancelled is not None and cancelled():
+                raise Disconnected
             now = time.monotonic()
             if now >= deadline:
                 raise DeadlineExpired
@@ -78,9 +83,10 @@ def _read_exact(fd: int, size: int, deadline: float) -> bytes:
 class _Heartbeat:
     """EOF or missing pulses cancels even when Windows kills only wsl.exe."""
 
-    def __init__(self, fd: int, deadline: float):
+    def __init__(self, fd: int, deadline: float, cancelled: Callable[[], bool] | None = None):
         self.fd = fd
         self.deadline = deadline
+        self.external_cancelled = cancelled
         self.lost = threading.Event()
         self.invalid = threading.Event()
         self.stopped = threading.Event()
@@ -111,12 +117,13 @@ class _Heartbeat:
             self.lost.set()
 
     def cancelled(self) -> bool:
-        return self.lost.is_set() or self.invalid.is_set() or time.monotonic() >= self.deadline
+        return (self.lost.is_set() or self.invalid.is_set() or time.monotonic() >= self.deadline
+                or bool(self.external_cancelled and self.external_cancelled()))
 
     def check(self):
         if self.invalid.is_set():
             raise ProtocolError
-        if self.lost.is_set():
+        if self.lost.is_set() or (self.external_cancelled is not None and self.external_cancelled()):
             raise Disconnected
         if time.monotonic() >= self.deadline:
             raise DeadlineExpired
@@ -198,7 +205,8 @@ def _send_pdf(fd: int, path: Path, heartbeat: _Heartbeat):
         os.close(handle)
 
 
-def serve(sandbox, *, input_fd: int = 0, output_fd: int = 1) -> int:
+def serve(sandbox, *, input_fd: int = 0, output_fd: int = 1,
+          cancelled: Callable[[], bool] | None = None) -> int:
     """Return a fixed status. All task files and sandbox children die first."""
     try:
         try:
@@ -208,10 +216,10 @@ def serve(sandbox, *, input_fd: int = 0, output_fd: int = 1) -> int:
         if not available:
             return 3
         initial = time.monotonic() + INITIAL_SECONDS
-        size = struct.unpack("!I", _read_exact(input_fd, 4, initial))[0]
+        size = struct.unpack("!I", _read_exact(input_fd, 4, initial, cancelled))[0]
         if not 0 < size <= MAX_HEADER:
             raise ProtocolError
-        request = _header(_read_exact(input_fd, size, initial))
+        request = _header(_read_exact(input_fd, size, initial, cancelled))
         deadline = time.monotonic() + request["timeout"]
         executable = shutil.which("libreoffice") or shutil.which("soffice")
         if not executable:
@@ -223,11 +231,11 @@ def serve(sandbox, *, input_fd: int = 0, output_fd: int = 1) -> int:
             remaining = request["length"]
             with source.open("xb") as target:
                 while remaining:
-                    chunk = _read_exact(input_fd, min(65536, remaining), deadline)
+                    chunk = _read_exact(input_fd, min(65536, remaining), deadline, cancelled)
                     target.write(chunk)
                     remaining -= len(chunk)
             source.chmod(0o400)
-            with _Heartbeat(input_fd, deadline) as heartbeat:
+            with _Heartbeat(input_fd, deadline, cancelled) as heartbeat:
                 heartbeat.check()
                 try:
                     sandbox.run_linux_conversion(executable, source, output,
@@ -254,8 +262,30 @@ def serve(sandbox, *, input_fd: int = 0, output_fd: int = 1) -> int:
 
 
 def main(sandbox) -> None:
-    code = serve(sandbox)
+    # WSL sends SIGHUP when the Windows owner/relay is killed. Turning it into
+    # cancellation keeps finally blocks alive long enough to reap bubblewrap
+    # and remove the material; a default HUP action would skip that cleanup.
+    requested = False
+    previous = {}
+
+    def request_stop(_number, _frame):
+        nonlocal requested
+        requested = True
+
+    try:
+        if threading.current_thread() is threading.main_thread():
+            for name in ("SIGHUP", "SIGTERM", "SIGINT"):
+                number = getattr(signal, name, None)
+                if number is not None:
+                    previous[number] = signal.signal(number, request_stop)
+        code = serve(sandbox, cancelled=lambda: requested)
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
     if code:
         # No OS diagnostics, host paths, document names or content cross back.
-        os.write(2, f"LearnMargin WSL conversion failed ({code}).\n".encode("ascii"))
+        try:
+            os.write(2, f"LearnMargin WSL conversion failed ({code}).\n".encode("ascii"))
+        except OSError:
+            pass
     raise SystemExit(code)

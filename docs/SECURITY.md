@@ -46,7 +46,7 @@ Ubuntu 若阻止创建用户命名空间，应由管理员启用发行版提供�
 
 上述系统隔离覆盖旧 Office 的 LibreOffice 转换。通用 PDF、图像、DOCX/PPTX 等解析仍在有资源限制的提取 worker 中；Office 转换后的 PDF 也经过这一通道。因此不能把转换器的权限隔离表述为整个文档解析链都已进入 OS 沙箱，也不能承诺任意恶意文件绝对安全。没有证据把此前 XML 过滤绕过定性为已经实现 XXE。
 
-Windows Job Object 限制提交内存和子进程树，Unix 使用进程组及每进程资源上限；Linux 的 2 GiB 不是所有子进程合计的 cgroup 配额，两者不能视为等价资源限制。已生成的旧 HTML 不会自动重写。没有进行真实付费模型调用、未知漏洞利用测试或所有模型网关兼容验证。
+Windows Job Object 限制 Windows 部分的提交内存和子进程树，不给 WSL 虚拟机设置合计内存配额。WSL 内的转换器与原生 Linux 一样使用每进程资源上限；2 GiB 不是所有子进程合计的 cgroup 配额。已生成的旧 HTML 不会自动重写。没有进行真实付费模型调用、未知漏洞利用测试或所有模型网关兼容验证。
 
 依赖审计覆盖锁定的 Python 包与 npm 依赖的已公布漏洞，不覆盖所有随包携带的原生库、系统 Python/Expat、操作系统和浏览器。Python 官方说明了 [XML 解析与 Expat 的安全边界](https://docs.python.org/3/library/xml.html#xml-security)；运行环境同样需要维护。
 

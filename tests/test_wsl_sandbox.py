@@ -1,7 +1,10 @@
 """Windows host transport checks; Linux namespace checks live with its helper."""
+import json
 import os
+import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -158,3 +161,136 @@ def test_real_dedicated_wsl_libreoffice_conversion(tmp_path, monkeypatch):
     source.write_bytes(br"{\rtf1\ansi LearnMargin isolated WSL conversion.}")
     sandbox.run_wsl_conversion(source, output, timeout=30)
     assert "LearnMargin isolated WSL conversion." in PdfReader(output).pages[0].extract_text()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(os.name != "nt" or not os.environ.get("LEARNMARGIN_TEST_OFFICE_WSL_DISTRIBUTION"),
+                    reason="Explicit dedicated WSL sandbox integration environment required")
+def test_real_windows_rtf_upload_runs_outer_worker_and_wsl_sandbox(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from learnmargin.app import create_app
+
+    monkeypatch.setenv(sandbox.DISTRIBUTION_ENV, os.environ["LEARNMARGIN_TEST_OFFICE_WSL_DISTRIBUTION"])
+    monkeypatch.setenv("LEARNMARGIN_ALLOW_LOCAL_OFFICE", "1")
+    application = create_app(tmp_path / "isolated-app-data")
+    with TestClient(application) as client:
+        uploaded = client.post("/api/documents", files={
+            "file": ("synthetic.rtf", br"{\rtf1\ansi LearnMargin Windows WSL upload integration test.}",
+                     "application/rtf"),
+        })
+        assert uploaded.status_code == 201, uploaded.text
+        document_id = uploaded.json()["id"]
+        unit = client.get(f"/api/documents/{document_id}/units/1")
+        assert unit.status_code == 200
+        assert "LearnMargin Windows WSL upload integration test" in unit.json()["text"]
+        assert unit.json()["images"]
+        for url in unit.json()["images"]:
+            image = client.get(url)
+            assert image.status_code == 200
+            assert image.headers["content-type"] == "image/png"
+            assert image.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(os.name != "nt" or not os.environ.get("LEARNMARGIN_TEST_OFFICE_WSL_DISTRIBUTION"),
+                    reason="Explicit dedicated WSL sandbox integration environment required")
+def test_real_windows_owner_death_reaps_wsl_detached_child_and_input(tmp_path, monkeypatch):
+    monkeypatch.setenv(sandbox.DISTRIBUTION_ENV, os.environ["LEARNMARGIN_TEST_OFFICE_WSL_DISTRIBUTION"])
+    tag = uuid.uuid4().hex[:12]
+    names = ["lmP" + tag, "lmC" + tag]
+    marker = "/tmp/learnmargin-owner-probe-" + tag
+    # Replace only the trusted synthetic converter command. The real WSL
+    # transport, helper protocol, namespaces and cancellation all remain active.
+    driver = f"""
+import ctypes, os, time
+name = {names[0]!r}
+if os.fork() == 0:
+    os.setsid()
+    name = {names[1]!r}
+ctypes.CDLL(None).prctl(15, name.encode(), 0, 0, 0)
+time.sleep(60)
+"""
+    patch = f"""
+from pathlib import Path
+original_temporary = b.tempfile.TemporaryDirectory
+def temporary(*args, **kwargs):
+    result = original_temporary(*args, **kwargs)
+    Path({marker!r}).write_text(result.name)
+    return result
+b.tempfile.TemporaryDirectory = temporary
+a._CONVERT = {driver!r}
+"""
+    source, output = tmp_path / "source.rtf", tmp_path / "result.pdf"
+    source.write_bytes(br"{\rtf1\ansi synthetic owner death fixture.}")
+    script = f"""
+import sys
+sys.path.insert(0, {str(Path(sandbox.__file__).parents[1])!r})
+from learnmargin import wsl_sandbox as sandbox
+from pathlib import Path
+original_bootstrap = sandbox._bootstrap
+sandbox._bootstrap = lambda: original_bootstrap().replace('b.main(a)', {('exec(' + repr(patch) + ');b.main(a)')!r})
+sandbox.run_wsl_conversion(Path({str(source)!r}), Path({str(output)!r}), timeout=30)
+"""
+    observer = f"""
+import json, pathlib
+found = {{}}
+for entry in pathlib.Path('/proc').iterdir():
+    if not entry.name.isdigit():
+        continue
+    try:
+        name = (entry / 'comm').read_text().strip()
+        if name in {names!r}:
+            status = (entry / 'stat').read_text().split(') ', 1)[1].split()
+            found[name] = [int(entry.name), int(status[2])]
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        pass
+marker = pathlib.Path({marker!r})
+task = marker.read_text() if marker.exists() else None
+print(json.dumps({{'processes': found, 'task': task, 'task_exists': bool(task and pathlib.Path(task).exists())}}))
+"""
+    observer_command = [str(sandbox._wsl_executable()), "--distribution", sandbox._distribution(),
+                        "--user", "learnmargin", "--cd", "/", "--exec", "/usr/bin/python3", "-I", "-S", "-c"]
+    def observe():
+        result = subprocess.run([*observer_command, observer], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, timeout=5, check=True,
+                                env=sandbox._environment(), creationflags=subprocess.CREATE_NO_WINDOW)
+        return json.loads(result.stdout)
+    # Use the base interpreter directly: killing a Windows venv launcher alone
+    # would not be the same as killing the process that owns the private Job.
+    process = subprocess.Popen([sys._base_executable, "-I", "-S", "-c", script],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                               env={**sandbox._environment(), sandbox.DISTRIBUTION_ENV: sandbox._distribution()},
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        deadline = time.monotonic() + 10
+        before = observe()
+        while set(before["processes"]) != set(names) and time.monotonic() < deadline:
+            assert process.poll() is None, process.stderr.read().decode(errors="replace")
+            time.sleep(.1)
+            before = observe()
+        assert set(before["processes"]) == set(names), before
+        # A real detached session exists, not merely a failed child launch.
+        child_pid, child_group = before["processes"][names[1]]
+        assert child_pid == child_group
+        assert before["task_exists"]
+        process.kill()
+        process.wait(timeout=5)
+        deadline = time.monotonic() + 7
+        after = observe()
+        while (after["processes"] or after["task_exists"]) and time.monotonic() < deadline:
+            time.sleep(.1)
+            after = observe()
+        assert not after["processes"], after
+        assert not after["task_exists"], after
+        assert not output.exists()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        process.stderr.close()
+        # Remove only this test's exact, synthetic marker. The helper owns and
+        # removes its private /dev/shm task directory itself.
+        subprocess.run([*observer_command, f"from pathlib import Path;Path({marker!r}).unlink(missing_ok=True)"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+                       env=sandbox._environment(), creationflags=subprocess.CREATE_NO_WINDOW, check=True)

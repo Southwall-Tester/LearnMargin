@@ -2,6 +2,7 @@
 import json
 import os
 import selectors
+import signal
 import struct
 import subprocess
 import sys
@@ -155,7 +156,7 @@ def _descendants(parent):
     return found
 
 
-@pytest.mark.parametrize("ending", ["eof", "missing_heartbeat", "deadline", "invalid_heartbeat"])
+@pytest.mark.parametrize("ending", ["eof", "missing_heartbeat", "deadline", "invalid_heartbeat", "sighup", "sigterm"])
 def test_real_bridge_parent_loss_kills_detached_namespace_and_removes_material(tmp_path, real_runtime, ending):
     process = _launch(tmp_path, "detached")
     descriptors = []
@@ -183,6 +184,8 @@ def test_real_bridge_parent_loss_kills_detached_namespace_and_removes_material(t
         elif ending == "invalid_heartbeat":
             process.stdin.write(b"Q")
             process.stdin.flush()
+        elif ending in ("sighup", "sigterm"):
+            os.kill(process.pid, signal.SIGHUP if ending == "sighup" else signal.SIGTERM)
         process.wait(timeout=5)
         expected = 6 if ending == "deadline" else 2 if ending == "invalid_heartbeat" else 5
         assert process.returncode == expected, process.stderr.read().decode()

@@ -17,6 +17,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# The CLI deliberately clears the parent environment. Windows PowerShell still
+# needs an executable extension list to invoke the absolute system WSL binary.
+$env:PATHEXT = '.EXE'
 $wslCommand = Join-Path $env:SystemRoot 'System32\wsl.exe'
 if (-not (Test-Path -LiteralPath $wslCommand -PathType Leaf)) {
     throw 'WSL is unavailable. Install WSL 2 before running this script.'
