@@ -100,13 +100,22 @@ def test_invalid_input_never_enters_parser(monkeypatch, tmp_path):
 def real_runtime():
     if sys.platform != "linux":
         pytest.skip("Linux namespaces are not available on this OS")
+    command = None
     try:
         runtime = sandbox._runtime(None, require_office=False)
         command = sandbox._sandbox_command(runtime, [runtime.python, "-I", "-S", "-c", "print('ok')"])
         assert sandbox._run(command, 5, limit=64) == b"ok\n"
     except (sandbox.SandboxUnavailable, sandbox.SandboxConversionError):
         if os.environ.get("LEARNMARGIN_REQUIRE_SANDBOX_TESTS") == "1":
-            pytest.fail("Required Linux sandbox could not be established")
+            diagnostic = ""
+            if command is not None:
+                # This is the fixed print('ok') probe, with no uploaded input
+                # or inherited environment. Keep raw OS diagnostics in tests,
+                # never in product responses to document uploads.
+                probe = subprocess.run(command, capture_output=True, timeout=5,
+                                       env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
+                diagnostic = probe.stderr.decode(errors="replace")[:1500]
+            pytest.fail(f"Required Linux sandbox could not be established: {diagnostic}")
         pytest.skip("bubblewrap / user namespaces unavailable")
     return runtime
 
