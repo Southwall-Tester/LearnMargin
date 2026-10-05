@@ -33,7 +33,7 @@ Windows Job Object 限制提交内存和子进程树，Unix 使用进程组及�
 
 依赖审计覆盖锁定的 Python 包与 npm 依赖的已公布漏洞，不覆盖所有随包携带的原生库、系统 Python/Expat、操作系统和浏览器。Python 官方说明了 [XML 解析与 Expat 的安全边界](https://docs.python.org/3/library/xml.html#xml-security)；运行环境同样需要维护。
 
-Ubuntu 23.10 及以后对浏览器 user namespace 有额外限制。CI 使用 runner 预装、由 root 拥有的 `/opt/google/chrome/chrome-sandbox`，通过 `CHROME_DEVEL_SANDBOX` 指定，并检查 setuid 标志；不全局关闭 AppArmor，也不传入 `--no-sandbox`。本机遇到同类启动错误时，参见 [Chromium 官方沙箱配置说明](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md)，配置系统支持的沙箱后再运行。
+Ubuntu 23.10 及以后对浏览器 user namespace 有额外限制。CI 为本次安装的两个 Playwright 浏览器的准确路径加载专用 AppArmor 配置，只放行它们创建 namespace；不用通配符覆盖其他程序，不全局关闭 AppArmor，也不传入 `--no-sandbox`。该配置只在临时 CI 机器生效。本机遇到同类启动错误时，参见 [Chromium 官方沙箱配置说明](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md)，配置系统支持的沙箱后再运行。
 
 ## 可复核验证
 
