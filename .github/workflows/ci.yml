@@ -17,6 +17,10 @@ jobs:
     name: Tests, PDF rendering and packages
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # Use the runner's installed Chrome sandbox without disabling Ubuntu's
+      # AppArmor user-namespace restrictions or Chromium's sandbox.
+      CHROME_DEVEL_SANDBOX: /opt/google/chrome/chrome-sandbox
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,6 +44,11 @@ jobs:
           uv run playwright install --with-deps chromium
           sudo apt-get update
           sudo apt-get install -y fonts-noto-cjk
+      - name: Verify installed Chromium sandbox helper
+        run: |
+          test -f "$CHROME_DEVEL_SANDBOX"
+          test -u "$CHROME_DEVEL_SANDBOX"
+          test "$(stat -c '%u' "$CHROME_DEVEL_SANDBOX")" = 0
       - name: Check application and skill
         run: |
           uv run ruff check src tests scripts

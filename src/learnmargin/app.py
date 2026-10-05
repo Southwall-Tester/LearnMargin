@@ -9,16 +9,24 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import UploadFile
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__
 from .config import data_directory, default_api, resolve_api
 from .demo import demo_lesson
-from .ingestion import MAX_UPLOAD_BYTES, SUPPORTED_EXTENSIONS, extract_document, find_libreoffice
+from .extraction_worker import extract_in_worker
+from .http_security import LocalRequestSecurity
+from .ingestion import (
+    MAX_UPLOAD_BYTES,
+    SUPPORTED_EXTENSIONS,
+    find_libreoffice,
+    local_office_enabled,
+)
 from .models import APIConfig, ConnectionTestResult, GenerateRequest
 from .pipeline import generate_lesson, parse_range
 from .provider import Provider
@@ -135,26 +143,23 @@ def create_app(root: Path | None = None) -> FastAPI:
 
     app = FastAPI(title="LearnMargin", version=__version__, lifespan=lifespan)
     app.state.store, app.state.jobs = store, jobs
+    app.add_middleware(LocalRequestSecurity)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
-
-    @app.middleware("http")
-    async def local_origin(request: Request, call_next):
-        origin = request.headers.get("origin")
-        if request.method not in {"GET", "HEAD", "OPTIONS"} and origin:
-            parsed = urlsplit(origin)
-            if parsed.netloc != request.headers.get("host"):
-                return JSONResponse({"detail": "请从 LearnMargin 本地页面操作。"}, status_code=403)
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        if request.url.path.startswith("/api"):
-            response.headers["Cache-Control"] = "no-store"
-        return response
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(_, error):
-        fields = ", ".join(".".join(str(part) for part in item["loc"][1:]) for item in error.errors())
+        allowed = set(GenerateRequest.model_fields) | set(APIConfig.model_fields) | {
+            "scope", "mode", "ranges", "topics", "include_prerequisites", "file",
+            "item_id", "job_id", "document_id", "index", "name",
+        }
+        fields = ", ".join(".".join(str(part) if isinstance(part, int) or part in allowed
+                                   else "[未定义字段]" for part in item["loc"][1:8])
+                           for item in error.errors()[:6])
         return JSONResponse({"detail": f"输入格式不正确，请检查：{fields or '请求参数'}。"}, status_code=422)
+
+    @app.exception_handler(RecursionError)
+    async def excessively_nested_request(_, error):
+        return JSONResponse({"detail": "请求内容嵌套过深，请简化后重试。"}, status_code=400)
 
     @app.exception_handler(ValueError)
     async def invalid_value(_, error):
@@ -181,7 +186,9 @@ def create_app(root: Path | None = None) -> FastAPI:
         except Exception:
             pass
         return {"api": values, "limits": {"max_upload_mb": MAX_UPLOAD_BYTES // 1024 // 1024, "max_documents": 8},
-                "formats": sorted(SUPPORTED_EXTENSIONS), "capabilities": {"libreoffice": bool(find_libreoffice()), "browser": browser},
+                "formats": sorted(SUPPORTED_EXTENSIONS), "capabilities": {
+                    "libreoffice": local_office_enabled() and bool(find_libreoffice()),
+                    "local_office_enabled": local_office_enabled(), "browser": browser},
                 "demo_available": True}
 
     @app.post("/api/connection-test", response_model=ConnectionTestResult)
@@ -193,8 +200,19 @@ def create_app(root: Path | None = None) -> FastAPI:
         async with Provider(config) as provider:
             return await provider.test_connection()
 
-    @app.post("/api/documents", status_code=201)
-    async def import_document(file: UploadFile = File(...)):
+    @app.post("/api/documents", status_code=201, openapi_extra={"requestBody": {
+        "required": True, "content": {"multipart/form-data": {"schema": {
+            "type": "object", "required": ["file"], "properties": {"file": {"type": "string", "format": "binary"}},
+        }}},
+    }})
+    async def import_document(request: Request):
+        async with request.form(max_files=1, max_fields=0) as form:
+            file = form.get("file")
+            if not isinstance(file, UploadFile):
+                raise ValueError("请上传一份材料文件。")
+            return await save_upload(file)
+
+    async def save_upload(file: UploadFile):
         original = (file.filename or "material").replace("\\", "/").split("/")[-1][:180]
         extension = Path(original).suffix.lower()
         if extension not in SUPPORTED_EXTENSIONS:
@@ -212,14 +230,12 @@ def create_app(root: Path | None = None) -> FastAPI:
                         raise ValueError("单份材料不能超过 50 MB，请拆分后导入。")
                     target.write(chunk)
             async with extraction_lock:
-                document = await asyncio.to_thread(extract_document, path, folder, item_id, original)
+                document = await extract_in_worker(path, folder, item_id, original)
             store.save_document(document)
             return document_summary(document)
-        except Exception:
+        except BaseException:
             store.delete_document(item_id)
             raise
-        finally:
-            await file.close()
 
     @app.get("/api/documents/{item_id}")
     async def get_document(item_id: str):
@@ -242,7 +258,9 @@ def create_app(root: Path | None = None) -> FastAPI:
         path = (folder / name).resolve()
         if name not in valid or not path.is_relative_to(folder) or not path.is_file():
             raise HTTPException(404, "找不到图片。")
-        return FileResponse(path)
+        if path.suffix.lower() != ".png":
+            raise HTTPException(404, "找不到图片。")
+        return FileResponse(path, media_type="image/png")
 
     @app.delete("/api/documents/{item_id}")
     async def remove_document(item_id: str):
@@ -297,6 +315,8 @@ def create_app(root: Path | None = None) -> FastAPI:
         detail = await unit_detail(document_id, index)
         detail["transcription"] = None
         path = store.directory("jobs", job_id) / "transcription.json"
+        if path.resolve() != path:
+            raise HTTPException(404, "来源文件路径无效。")
         if path.is_file():
             data = json.loads(path.read_text(encoding="utf-8"))
             record = next((unit for unit in data.get("units", []) if unit["ref"] == ref), None)
@@ -325,7 +345,7 @@ def create_app(root: Path | None = None) -> FastAPI:
         if job["status"] != "completed" or name not in ARTIFACTS:
             raise HTTPException(404, "文件尚未生成或不存在。")
         path = store.directory("jobs", item_id) / name
-        if not path.is_file():
+        if path.resolve() != path or not path.is_file():
             raise HTTPException(404, "生成文件已被移除，请重新生成。")
         return FileResponse(path, media_type=ARTIFACTS[name], filename=name,
                             content_disposition_type="inline" if name in {"lesson.pdf", "lesson.html"} else "attachment")

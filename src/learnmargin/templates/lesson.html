@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {{ script_sources }}; style-src 'unsafe-inline'; font-src data:; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
   <title>{{ lesson.title }} · LearnMargin</title>
   <style>{{ katex_css }}</style>
   <style>:root{--page-width:{{ page_width }}mm;--rail-width:{{ 54 if layout == 'a4' else 66 }}mm}@page{size:{{ page_width }}mm 297mm;margin:0}{{ stylesheet }}</style>

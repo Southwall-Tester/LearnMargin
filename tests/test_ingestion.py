@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import io
+import stat
+import struct
 import subprocess
 import zipfile
+import zlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from docx import Document as WordDocument
@@ -211,6 +215,7 @@ def test_images_are_bounded_and_tiff_preserves_frames(tmp_path, monkeypatch):
 
 
 def test_legacy_missing_dependency_and_timeout_are_actionable(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEARNMARGIN_ALLOW_LOCAL_OFFICE", "1")
     source = tmp_path / "old.doc"
     source.write_bytes(b"old document fixture")
     monkeypatch.setattr(ingestion, "find_libreoffice", lambda: None)
@@ -278,3 +283,138 @@ def test_upload_size_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(ingestion, "MAX_UPLOAD_BYTES", 99)
     with pytest.raises(IngestionError, match="超过 50 MB"):
         extract_document(source, tmp_path / "out", "large")
+
+
+def test_forged_zip_size_and_matching_truncated_crc_are_rejected_before_document_parser(tmp_path, monkeypatch):
+    source = tmp_path / "forged.docx"
+    # 8 MB expands from a few KB; both directory and local header lie about the
+    # uncompressed length. A CRC of the first 100 bytes also fools chunked
+    # ZipExtFile reads, which truncate output to the declared size.
+    payload = b"A" * (8 * 1024 * 1024)
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", payload)
+    data = bytearray(source.read_bytes())
+    central = data.index(b"PK\x01\x02")
+    checksum = zlib.crc32(payload[:100])
+    struct.pack_into("<I", data, 14, checksum)
+    struct.pack_into("<I", data, 22, 100)
+    struct.pack_into("<I", data, central + 16, checksum)
+    struct.pack_into("<I", data, central + 24, 100)
+    source.write_bytes(data)
+    monkeypatch.setattr(ingestion, "_docx", lambda *_: pytest.fail("unsafe archive reached document parser"))
+    with pytest.raises(IngestionError, match="声明大小与实际内容不一致"):
+        extract_document(source, tmp_path / "out", "bad")
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16", "utf-16-be"])
+@pytest.mark.parametrize("member", ["word/document.xml", "word/content.bin"])
+def test_encoded_xml_declarations_are_rejected_before_office_parser(tmp_path, monkeypatch, encoding, member):
+    source = tmp_path / "entity.docx"
+    payload = ('<?xml version="1.0" encoding="UTF-16"?>' if encoding.startswith("utf-16") else
+               '<?xml version="1.0" encoding="UTF-8"?>')
+    payload += '<!DOCTYPE doc [<!ENTITY value "expanded">]><doc>&value;</doc>'
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(member, payload.encode(encoding))
+        archive.writestr("[Content_Types].xml",
+                          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                          f'<Override PartName="/{member}" ContentType="application/example+xml"/>'
+                          '</Types>')
+    monkeypatch.setattr(ingestion, "_docx", lambda *_: pytest.fail("DTD reached document parser"))
+    with pytest.raises(IngestionError, match="XML"):
+        extract_document(source, tmp_path / "out", "bad")
+
+
+def test_safe_xml_rejects_encoded_external_entities_without_resolving_them():
+    payload = ('<?xml version="1.0" encoding="UTF-16"?>'
+               '<!DOCTYPE doc [<!ENTITY value SYSTEM "file:///synthetic-test-only.txt">]>'
+               '<doc>&value;</doc>').encode("utf-16")
+    with pytest.raises(IngestionError, match="XML"):
+        ingestion._safe_xml(payload)
+    assert ingestion._safe_xml('<?xml version="1.0" encoding="UTF-16"?><doc>正文</doc>'.encode("utf-16")).text == "正文"
+
+
+def test_zip_streaming_descriptors_zip64_and_utf16_xml_still_work(tmp_path):
+    class Unseekable(io.BytesIO):
+        def seek(self, *args):
+            raise io.UnsupportedOperation("not seekable")
+
+    stream = Unseekable()
+    with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
+        with archive.open("word/document.xml", "w", force_zip64=True) as member:
+            member.write('<?xml version="1.0" encoding="UTF-16"?><doc>正文</doc>'.encode("utf-16"))
+        archive.writestr("word/media/image.png", image_bytes())
+    source = tmp_path / "streamed.docx"
+    source.write_bytes(stream.getvalue())
+    ingestion._check_zip(source)
+
+
+@pytest.mark.parametrize("compression", [zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA])
+def test_non_office_zip_compression_is_rejected(tmp_path, compression):
+    source = tmp_path / "compressed.docx"
+    with zipfile.ZipFile(source, "w", compression) as archive:
+        archive.writestr("word/document.xml", "<doc/>")
+    with pytest.raises(IngestionError, match="压缩方式"):
+        ingestion._check_zip(source)
+
+
+def test_zip_symbolic_link_is_not_treated_as_a_regular_member(tmp_path):
+    source = tmp_path / "linked.docx"
+    link = zipfile.ZipInfo("word/document.xml")
+    link.create_system = 3
+    link.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr(link, "../../outside.xml")
+    with pytest.raises(IngestionError, match="路径"):
+        ingestion._check_zip(source)
+
+
+@pytest.mark.parametrize("value", [None, "0", "true"])
+def test_legacy_conversion_requires_explicit_local_opt_in(tmp_path, monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("LEARNMARGIN_ALLOW_LOCAL_OFFICE", raising=False)
+    else:
+        monkeypatch.setenv("LEARNMARGIN_ALLOW_LOCAL_OFFICE", value)
+    source = tmp_path / "old.doc"
+    source.write_bytes(b"synthetic old document")
+    monkeypatch.setattr(ingestion, "find_libreoffice", lambda: pytest.fail("converter should not be consulted"))
+    monkeypatch.setattr(ingestion, "_run_converter", lambda *_: pytest.fail("converter must not be started"))
+    with pytest.raises(IngestionError, match="默认关闭"):
+        extract_document(source, tmp_path / "out", "old")
+
+
+@pytest.mark.parametrize("in_worker", [False, True])
+def test_unix_converter_stays_in_extraction_workers_process_group(monkeypatch, in_worker):
+    calls = []
+
+    class Process:
+        pid = 123456
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def wait(self, timeout):
+            if timeout == ingestion.CONVERSION_TIMEOUT:
+                raise subprocess.TimeoutExpired("soffice", timeout)
+            return -1
+
+        def kill(self):
+            calls.append("kill")
+
+    def start(command, **kwargs):
+        assert kwargs["start_new_session"] is not in_worker
+        return Process()
+
+    # Mock only ingestion's OS view, so this Unix process-lifecycle regression
+    # also runs on Windows without changing pathlib/pytest's global platform.
+    monkeypatch.setattr(ingestion, "os", SimpleNamespace(
+        name="posix", environ={"LEARNMARGIN_EXTRACTION_WORKER": "1" if in_worker else "0"},
+        killpg=lambda pid, signal: calls.append("kill group")))
+    monkeypatch.setattr(ingestion, "signal", SimpleNamespace(SIGKILL=9))
+    monkeypatch.setattr(ingestion.subprocess, "Popen", start)
+    with pytest.raises(IngestionError, match="120 秒"):
+        ingestion._run_converter(["soffice", "--headless"])
+    assert ("kill group" in calls) is not in_worker
+    assert "kill" in calls

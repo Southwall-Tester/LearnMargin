@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 from functools import lru_cache
@@ -123,6 +124,13 @@ def build_html(lesson: Lesson, *, layout: str = "a4") -> str:
         if any(note.ref not in source_refs or note.ref not in section.source_refs for note in section.source_notes):
             raise RenderError("资料对照引用的位置不存在，或未列入当前章节来源。")
     css, katex = _math_assets()
+    paginator = (ROOT / "templates" / "paginate.js").read_text(encoding="utf-8")
+    # The portable HTML must only execute the two bundled scripts. Hashes cover
+    # the exact script text emitted below; model content never enters this list.
+    script_sources = " ".join(
+        "'sha256-" + base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii") + "'"
+        for script in (katex, paginator)
+    )
     environment = Environment(
         loader=FileSystemLoader(ROOT / "templates"), autoescape=select_autoescape(["html", "xml"])
     )
@@ -141,11 +149,11 @@ def build_html(lesson: Lesson, *, layout: str = "a4") -> str:
         pause_plan=pause_plan, pause_cards=pause_cards,
         has_answers=any(section.practice or any(prompt.answer for prompt in section.study_prompts)
                         for section in lesson.sections),
-        source_refs=source_refs, katex_css=Markup(css), katex_script=Markup(katex),
+        source_refs=source_refs, katex_css=Markup(css), katex_script=Markup(katex), script_sources=script_sources,
         role_labels={"primary": lesson.text.source_primary, "reference": lesson.text.source_reference,
                      "topic": lesson.text.source_topic},
         stylesheet=Markup((ROOT / "templates" / "lesson.css").read_text(encoding="utf-8")),
-        paginator=Markup((ROOT / "templates" / "paginate.js").read_text(encoding="utf-8")),
+        paginator=Markup(paginator),
     )
 
 
@@ -285,9 +293,12 @@ async def render_lesson(lesson: Lesson, output_dir: Path, *, layout: str = "a4")
     errors: list[str] = []
     async with async_playwright() as playwright:
         try:
-            browser = await playwright.chromium.launch(headless=True)
+            browser = await playwright.chromium.launch(headless=True, chromium_sandbox=True)
         except Exception as exc:
-            raise RenderError("无法启动 PDF 引擎。请执行 python -m playwright install chromium。") from exc
+            raise RenderError(
+                "无法启动启用沙箱的 PDF 引擎。请确认已执行 python -m playwright install chromium，"
+                "并安装浏览器系统依赖、允许 Chromium 沙箱；不会改用无沙箱模式。"
+            ) from exc
         try:
             page = await browser.new_page(viewport={"width": 1280, "height": 1000})
             async def intercept(route: Any) -> None:

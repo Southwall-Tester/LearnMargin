@@ -6,7 +6,7 @@
 
 `learnmargin.ingestion.extract_document(path: Path, output_dir: Path, document_id: str, original_name: str | None = None) -> Document`
 
-Every unit has a one-based index, an honest display label, extracted text and image filenames relative to `output_dir`. No uploaded files execute code. Limits must reject oversized/decompression-bomb documents. PDF pages can be rendered via pypdfium2; plain text via pypdf. DOCX sections must not pretend to be rendered pages. PPTX units are slides. LibreOffice enables legacy Office conversion when installed; missing dependency produces a specific actionable error. Preserve warnings about extraction/visual limitations.
+Every unit has a one-based index, an honest display label, extracted text and image filenames relative to `output_dir`. Uploaded code/macros are not deliberately executed; native parsers are not a general hostile-document sandbox. Limits must check actual ZIP inflation as well as metadata. XML DTD/entity declarations are rejected after encoding detection. PDF pages can be rendered via pypdfium2; plain text via pypdf. DOCX sections must not pretend to be rendered pages. PPTX units are slides. Local LibreOffice conversion is disabled unless `LEARNMARGIN_ALLOW_LOCAL_OFFICE=1` is configured outside HTTP; this opt-in is for trusted files and does not create a sandbox. Preserve warnings about extraction/visual limitations.
 
 ## PDF renderer
 
@@ -27,7 +27,7 @@ Treat generated Markdown as untrusted, escape HTML, neutralize authored links an
 ## HTTP API (same origin)
 
 - `GET /api/health` → `{status, version}`.
-- `GET /api/settings` → `{api:{base_url,model,protocol,vision,json_mode,has_api_key},limits:{max_upload_mb,max_documents},formats:[...],capabilities:{libreoffice,browser},demo_available:true}`. Never return API keys.
+- `GET /api/settings` → `{api:{base_url,model,protocol,vision,json_mode,has_api_key},limits:{max_upload_mb,max_documents},formats:[...],capabilities:{libreoffice,local_office_enabled,browser},demo_available:true}`. Never return API keys. `libreoffice` is true only when the local opt-in is enabled and the executable is available.
 - `POST /api/connection-test` JSON `APIConfig` → `{ok:true,message:"连接成功",model:string,latency_ms:integer}`. Resolve credentials with the same endpoint binding as generation; a remote endpoint requires a key, while localhost may omit it. Send exactly one fixed text-only request using the selected protocol, model and JSON mode, with at most 256 output tokens and a total timeout of at most 30 seconds. No automatic retries, uploaded material, saved configuration, saved keys or job creation. Success requires valid nonempty response text; HTTP 200 alone is insufficient. Failures use the standard Chinese `detail` response without exposing upstream bodies. The frontend sends this request only after an explicit test-button click and notes that it may incur a small API charge.
 - `POST /api/documents` multipart `file` → Document summary `{id,name,kind,unit_label,total_units,warnings,units:[{index,label,preview,has_images}]}`.
 - `GET /api/documents/{id}` → same summary.

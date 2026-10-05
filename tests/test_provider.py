@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import traceback
 
 import httpx
 import pytest
@@ -205,3 +206,196 @@ async def test_malformed_provider_envelope_raises_actionable_error(protocol, res
 def test_model_result_must_be_a_json_object(text):
     with pytest.raises(ValueError):
         decode_json(text)
+
+
+class CountingStream(httpx.AsyncByteStream):
+    def __init__(self, chunks):
+        self.chunks = chunks
+        self.reads = 0
+        self.closed = False
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            self.reads += 1
+            yield chunk
+
+    async def aclose(self):
+        self.closed = True
+
+
+async def test_large_chunked_response_stops_reading_and_closes_connection(monkeypatch):
+    monkeypatch.setattr(provider_module, "MAX_RESPONSE_BYTES", 65536)
+    stream = CountingStream([b"x" * 65536] * 4)
+    async with Provider(config(), transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=stream))) as client:
+        with pytest.raises(ProviderError, match="响应过大"):
+            await client.generate(Reply, "系统", "正文")
+    assert stream.reads == 2 and stream.closed
+
+
+@pytest.mark.parametrize("headers,match", [
+    ({"Content-Length": str(provider_module.MAX_RESPONSE_BYTES + 1)}, "响应过大"),
+    ({"Content-Length": "not-a-length"}, "响应长度"),
+    ({"Content-Encoding": "gzip"}, "压缩响应"),
+    ({"Content-Encoding": "br"}, "压缩响应"),
+])
+async def test_unacceptable_response_headers_abort_before_body_read(headers, match):
+    stream = CountingStream([b"private provider data"])
+    async with Provider(config(), transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, headers=headers, stream=stream))) as client:
+        with pytest.raises(ProviderError, match=match):
+            await client.generate(Reply, "系统", "正文")
+    assert not stream.reads and stream.closed
+
+
+@pytest.mark.parametrize("status", [302, 401, 500])
+async def test_error_bodies_are_never_read(status):
+    stream = CountingStream([b"fake-test-key"] * 100)
+    async with Provider(config(), transport=httpx.MockTransport(
+            lambda request: httpx.Response(status, stream=stream))) as client:
+        with pytest.raises(ProviderError) as caught:
+            await client.generate(Reply, "系统", "正文")
+    assert not stream.reads and stream.closed
+    assert "fake-test-key" not in "".join(traceback.format_exception(caught.value))
+
+
+async def test_total_deadline_also_stops_slow_generation_body(monkeypatch):
+    timeouts = []
+    original_timeout = provider_module.asyncio.timeout
+
+    def short_timeout(delay):
+        timeouts.append(delay)
+        return original_timeout(.01)
+
+    class SlowStream(CountingStream):
+        async def __aiter__(self):
+            yield b"{"
+            await provider_module.asyncio.sleep(60)
+            yield b"}"
+
+    stream = SlowStream([])
+    monkeypatch.setattr(provider_module.asyncio, "timeout", short_timeout)
+    async with Provider(config(timeout_seconds=10), transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=stream))) as client:
+        with pytest.raises(ProviderError, match="模型响应超时"):
+            await client.generate(Reply, "系统", "正文")
+    assert timeouts == [10] and stream.closed
+
+
+async def test_only_known_finite_nonnegative_usage_counters_are_saved():
+    body = envelope()
+    body["usage"] = {"fake-test-key": 123, "unknown_counter": 7, "total_tokens": float("inf"),
+                     "input_tokens": -3, "completion_tokens": True, "prompt_tokens": 12,
+                     "output_tokens": 10**200, "prompt_cache_hit_tokens": 3}
+    async with Provider(config(), transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=json.dumps(body)))) as client:
+        await client.generate(Reply, "系统", "正文")
+        assert client.usage == [{"prompt_tokens": 12, "prompt_cache_hit_tokens": 3}]
+
+
+@pytest.mark.parametrize("error", [httpx.ReadTimeout, httpx.ConnectError])
+async def test_transport_exception_traceback_does_not_echo_url_or_key(error):
+    def fail(request):
+        raise error("private-source fake-test-key", request=request)
+
+    async with Provider(config(), transport=httpx.MockTransport(fail)) as client:
+        with pytest.raises(ProviderError) as caught:
+            await client.generate(Reply, "系统", "正文")
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert "private-source" not in rendered and "fake-test-key" not in rendered
+
+
+@pytest.mark.parametrize("url,trust_env", [("http://localhost:11434/v1", False),
+                                            ("https://model.example/v1", True)])
+async def test_local_plaintext_api_ignores_environment_proxy(url, trust_env, monkeypatch):
+    captured = []
+    original_client = httpx.AsyncClient
+
+    def capture_client(**kwargs):
+        captured.append(kwargs)
+        return original_client(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", capture_client)
+    async with Provider(APIConfig(base_url=url), transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=envelope()))) as client:
+        await client.generate(Reply, "系统", "正文")
+    assert captured[0]["trust_env"] is trust_env
+    assert captured[0]["follow_redirects"] is False
+    assert captured[0]["headers"]["Accept-Encoding"] == "identity"
+
+
+@pytest.mark.parametrize("settings", [
+    APIConfig(base_url="https://fake-secret@model.example/v1"),
+    APIConfig(base_url="http://remote.example/v1"),
+    APIConfig(api_key=SecretStr("fake-secret\r\nInjected: yes")),
+])
+def test_direct_provider_construction_cannot_bypass_config_validation(settings):
+    with pytest.raises(ValueError) as caught:
+        Provider(settings)
+    assert "fake-secret" not in str(caught.value)
+
+
+async def test_excessively_nested_json_has_sanitized_error():
+    raw = b'{"private-field":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}"
+    async with Provider(config(), transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=raw))) as client:
+        with pytest.raises(ProviderError, match="JSON") as caught:
+            await client.generate(Reply, "系统", "正文")
+    assert "private-field" not in "".join(traceback.format_exception(caught.value))
+
+
+async def test_nested_model_output_repair_has_no_raw_values():
+    text = '{"answer":' + "[" * 130 + '"fake-test-key"' + "]" * 130 + "}"
+    sent = []
+
+    def respond(request):
+        sent.append(request.content)
+        return httpx.Response(200, json=envelope(text=text))
+
+    async with Provider(config(), transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(ProviderError, match="嵌套层级") as caught:
+            await client.generate(Reply, "系统", "正文")
+    assert len(sent) == 2 and b"fake-test-key" not in sent[1]
+    assert "fake-test-key" not in "".join(traceback.format_exception(caught.value))
+
+
+def test_json_depth_check_ignores_brackets_inside_escaped_strings():
+    answer = '[\\"{}]' * 500
+    assert decode_json(json.dumps({"answer": answer})) == {"answer": answer}
+
+
+async def test_image_data_limit_is_applied_while_reading(tmp_path, monkeypatch):
+    monkeypatch.setattr(provider_module, "MAX_IMAGE_BYTES", 32)
+    picture = tmp_path / "oversized.png"
+    picture.write_bytes(b"x" * 100)
+
+    def no_request(_):
+        raise AssertionError("Oversized image must not be sent")
+
+    async with Provider(config(), transport=httpx.MockTransport(no_request)) as client:
+        with pytest.raises(ProviderError, match="图片数据过大"):
+            await client.generate(Reply, "系统", "正文", [picture])
+
+
+def test_malformed_environment_proxy_does_not_echo_its_credentials(monkeypatch):
+    # Construct the real HTTPX client; no request is sent.
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "ftp://fake-proxy-secret@proxy.example:3128")
+    with pytest.raises(ProviderError, match="代理与证书") as caught:
+        Provider(config())
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert "fake-proxy-secret" not in rendered and "fake-test-key" not in rendered
+
+
+@pytest.mark.parametrize("error", [ValueError, OSError, httpx.ProxyError, httpx.InvalidURL])
+def test_client_setup_errors_have_sanitized_tracebacks(error, monkeypatch):
+    def fail_client(**_):
+        raise error("fake-proxy-secret private-certificate-path")
+
+    monkeypatch.setattr(httpx, "AsyncClient", fail_client)
+    with pytest.raises(ProviderError, match="代理与证书") as caught:
+        Provider(config())
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert "fake-proxy-secret" not in rendered and "private-certificate-path" not in rendered
