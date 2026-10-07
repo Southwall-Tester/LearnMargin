@@ -97,6 +97,9 @@ class PlannedSection(Model):
     title: str
     objective: str
     source_refs: list[str] = Field(min_length=1)
+    guidance_focus: str = Field(default="", max_length=600,
+        description="本节在哪个学习节点需要什么帮助、为什么适合；可选看示范、独立尝试、反馈纠错、"
+        "提取、卡点处理、迁移或复习等，不是题目清单。结合前后节避免重复；无需指导可留空。")
 
 
 class LessonPlan(Model):
@@ -106,24 +109,44 @@ class LessonPlan(Model):
     overview: Overview
     sections: list[PlannedSection] = Field(min_length=1)
     review_plan: list[str] = Field(min_length=1, max_length=8)
-    method_chapters: list[int] = Field(min_length=1, max_length=8)
+    method_chapters: list[int] = Field(min_length=1, max_length=18)
+
+
+PromptPlacement = Literal["before_explanation", "after_explanation", "before_example", "after_example",
+                          "before_practice", "after_practice"]
 
 
 class StudyPrompt(Model):
     id: str
     kind: Literal["question", "action"] = Field(
         description="要求写出、解释、判断、计算或重建知识答案用question并提供answer；"
-        "只有计时、休息、翻页等无需知识作答的操作用action，不按动笔或遮住等开头词分类。"
+        "组织学习过程用action，例如如何读示范、先尝试后看提示、记录卡点、核对后安排重做；"
+        "不为流程记录另造标准答案，也不能将新知识题伪装为action以省略答案。"
     )
+    placement: PromptPlacement | None = Field(default=None,
+        description="卡片实际贴近的内容位置，新生成时明确选择。练习前后指本节整组practice，"
+        "没有练习不能选这两个位置；旧数据不填时保留首卡讲解旁、次卡例题旁。")
     when: str
     task: str
-    check: str
+    check: str = Field(description="知识题的核对要点随答案后置；流程指导只写需要的后续操作或核对入口，"
+        "可留空，不把行动记录当成知识测验。")
     answer: str | None = None
 
     @model_validator(mode="after")
     def question_has_answer(self):
         if self.kind == "question" and (self.answer is None or not self.answer.strip()):
             raise PydanticCustomError("question_answer_required", "需要作答的侧栏提示必须提供参考答案。")
+        return self
+
+
+class GeneratedStudyPrompt(StudyPrompt):
+    placement: PromptPlacement = Field(description="卡片实际位置，与when及当前学习动作一致。"
+        "before/after_practice针对本节整组练习，没有练习时不可选。")
+
+    @model_validator(mode="after")
+    def action_has_no_knowledge_answer(self):
+        if self.kind == "action" and self.answer is not None:
+            raise PydanticCustomError("action_answer_not_allowed", "流程指导不另设知识答案；新知识问题请用question。")
         return self
 
 
@@ -149,13 +172,14 @@ class SourceNote(Model):
 
 class StudyLoad(Model):
     explanation_minutes: float = Field(gt=0, le=180, allow_inf_nan=False,
-        description="理解explanation的概念和完整推导，加上第一条study_prompts（若有）的合计估计分钟数；"
+        description="理解explanation的概念和完整推导，加上before_explanation/after_explanation提示的合计估计分钟数；"
         "不含source_notes，不按页数或字数换算。")
     worked_example_minutes: float = Field(gt=0, le=180, allow_inf_nan=False,
-        description="理解source_notes、跟随worked_example并核对，加上第二条study_prompts（若有）的"
+        description="理解source_notes、跟随worked_example并核对，加上before_example/after_example提示的"
         "合计估计分钟数；这些内容排在explanation休息边界之后，只计入本字段。")
     practice_minutes: float = Field(ge=0, le=180, allow_inf_nan=False,
-        description="完成本节全部练习并核对答案的合计估计分钟数；没有练习时为0。")
+        description="完成本节全部练习并核对答案，含before_practice/after_practice提示的合计估计分钟数；"
+        "没有练习时为0。流程中将来才做的复习不算当前时间；旧提示未指定位置时首条计讲解、次条计例题。")
     rationale: str = Field(min_length=1, max_length=400,
         description="用所选输出语言简述难度、推导步骤、作答及核对所需负荷的依据；不是实际学习记录。")
 
@@ -184,6 +208,9 @@ class LessonSection(Model):
 
     @model_validator(mode="after")
     def practice_load_matches_content(self):
+        if not self.practice and any(prompt.placement in {"before_practice", "after_practice"}
+                                     for prompt in self.study_prompts):
+            raise PydanticCustomError("guidance_placement_without_practice", "本节没有练习，不能把侧栏放在练习前或练习后。")
         if self.study_load is not None and bool(self.practice) != (self.study_load.practice_minutes > 0):
             raise ValueError("有练习时须估计作答和核对负荷；没有练习时practice_minutes必须为0。")
         return self
@@ -193,6 +220,7 @@ class GeneratedLessonSection(LessonSection):
     """New generation requires explicit author checks; saved lessons remain compatible."""
 
     study_load: StudyLoad
+    study_prompts: list[GeneratedStudyPrompt] = Field(default_factory=list, max_length=2)
     unresolved_prerequisites: list[str] = Field(max_length=8,
         description="仍缺乏依据、导致无法理解本节或验证论证的必要定义或结论；没有则必须返回空数组。"
         "定义和角色已清楚、仅不知英文全称不算实质缺口。")

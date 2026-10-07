@@ -30,8 +30,11 @@ def demo_lesson() -> Lesson:
                     "| $P(A\\mid B)$ | $6/10=3/5$ | 戴眼镜的10人 |\n"
                     "| $P(B\\mid A)$ | $6/12=1/2$ | 社团的12人 |\n\n"
                     "同样是6名同时满足条件的学生，换了已知条件，分母也随之改变。",
-                study_prompts=[StudyPrompt(id="s1-a1", kind="question", when="看完例题后", task="遮住表格，解释为什么两个条件概率的分母分别是10和12。", check="核对竖线右侧代表的人群。",
-                    answer="$P(A|B)$ 已知戴眼镜，所以在10人中选；$P(B|A)$ 已知参加社团，所以在12人中选。")],
+                study_prompts=[StudyPrompt(id="s1-a1", kind="question", placement="after_example", when="看完例题后", task="遮住表格，解释为什么两个条件概率的分母分别是10和12。", check="核对竖线右侧代表的人群。",
+                    answer="$P(A|B)$ 已知戴眼镜，所以在10人中选；$P(B|A)$ 已知参加社团，所以在12人中选。"),
+                    StudyPrompt(id="s1-a2", kind="action", placement="before_example", when="初次看例题",
+                    task="第一遍可以对照完整解答。沿着题干找到每个分母对应的人群；遇到不明白的转折，先标记这一处再回查定义。",
+                    check="看懂后再遮住表格尝试回想，不必一开始就凭空猜解法。")],
                 pause=Pause(when="若本轮已专注约25分钟，休息5分钟；计时先到可记下卡点先停。",
                             activity="放下材料，起身活动。", resume="回来先说出条件概率的分母由谁决定。")),
             LessonSection(id="s2", title="独立性：比较概率关系", source_refs=["example:2"],
@@ -46,11 +49,9 @@ def demo_lesson() -> Lesson:
                     hint="先确定星号卡的总数，再比较交集与乘积。",
                     answer="$P(R|S)=4/10=2/5$。$P(R\\cap S)=4/40=1/10$，"
                            "$P(R)P(S)=(16/40)(10/40)=1/10$，所以独立。")],
-                study_prompts=[StudyPrompt(id="s2-a1", kind="question", when="看完独立性例题后",
-                    task="遮住解答，重算班级例题中的交集概率与边际概率乘积，再判断是否独立。",
-                    check="",
-                    answer="$P(A\\cap B)=6/30=1/5$，$P(A)P(B)=(12/30)(10/30)=2/15$。"
-                           "两者不相等，所以不独立。")]),
+                study_prompts=[StudyPrompt(id="s2-a1", kind="action", placement="before_practice", when="做卡片题前",
+                    task="先留下自己的尝试，再看提示或答案。记下本题是独立完成、用过提示，还是仍有卡点；卡住时保留第一处不确定的步骤。",
+                    check="本题下方有答案入口。核对后针对第一处差异回查解释，再闭卷重做。")]),
         ],
         review_plan=["明天只看班级题干，重建两个条件概率。", "隔两天重做卡片题，说明独立性的判断依据。"],
         method_chapters=[4, 6, 7, 14],

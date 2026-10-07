@@ -106,6 +106,8 @@ def output_error_summary(error: ValueError | RecursionError, schema: type[BaseMo
         "less_than_equal": "数值大于允许上限",
         "value_error": "未满足字段约束或字段间条件",
         "question_answer_required": "需要作答的侧栏提示必须填写非空参考答案 answer",
+        "action_answer_not_allowed": "流程指导 action 的 answer 必须为 null；新增知识问题使用 question 并提供答案",
+        "guidance_placement_without_practice": "没有 practice 时，侧栏 placement 不能选 before_practice 或 after_practice",
     }
     summaries = []
     for detail in error.errors(include_url=False, include_input=False, include_context=False)[:6]:

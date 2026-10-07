@@ -45,8 +45,9 @@ def plan(*, missing=False, invalid=False, duplicate=False):
         "summary": "条件概率改变参考范围；独立性检验条件是否改变概率。",
         "concepts": [{"name": "条件概率", "explanation": "在已知事件内计算比例。", "connections": "结合独立性检查。"}],
         "learning_path": ["理解分母", "比较概率"]},
-        "sections": [{"id": "s1", "title": "条件概率", "objective": "理解分母", "source_refs": [first]},
-                     {"id": "s1" if duplicate else "s2", "title": "独立性", "objective": "比较概率", "source_refs": [second]}],
+        "sections": [{"id": "s1", "title": "条件概率", "objective": "理解分母", "source_refs": [first], "guidance_focus": ""},
+                     {"id": "s1" if duplicate else "s2", "title": "独立性", "objective": "比较概率",
+                      "source_refs": [second], "guidance_focus": ""}],
         "review_plan": ["明天不看讲义重新解释分母。"], "method_chapters": [3, 4],
         "text": chinese_lesson_text().model_dump()}
 
@@ -60,8 +61,9 @@ def section(index, *, reference=None, duplicate_prompt=False):
             "study_load": {"explanation_minutes": 8, "worked_example_minutes": 5,
                            "practice_minutes": 0, "rationale": "理解条件限制，再跟随一个集合计数例题。"},
             "practice": [], "study_prompts": [{"id": "shared" if duplicate_prompt else f"s{index}-a1",
-                "kind": "action", "when": "完成例题后", "task": "遮住例题，重做一次后再核对。",
-                "check": "对照讲义标记第一处不一致的步骤。"}]}
+                "kind": "action", "placement": "after_example", "when": "完成例题后",
+                "task": "在例题中标出最早需要回查解释的步骤，保留卡点再继续。",
+                "check": "若没有卡点可直接继续。"}]}
 
 
 def review_draft(schema, user):
@@ -206,14 +208,67 @@ async def test_both_writing_stages_map_every_content_block_to_its_actual_break_b
     writing_prompts = [prompt for schema, prompt, _ in provider.calls if schema == "GeneratedLessonSection"]
     assert len(writing_prompts) == 4
     for prompt in writing_prompts:
-        assert "explanation_minutes包含explanation和第一条study_prompts（若有）" in prompt
-        assert "worked_example_minutes包含source_notes、worked_example和第二条study_prompts（若有）" in prompt
-        assert "practice_minutes包含全部practice作答及答案核对，无练习时为0" in prompt
+        assert "explanation_minutes包含explanation和before_explanation/after_explanation提示" in prompt
+        assert "worked_example_minutes包含source_notes、worked_example及before_example/after_example提示" in prompt
+        assert "practice_minutes包含全部practice作答及答案核对、before_practice/after_practice提示，无练习时为0" in prompt
         assert "source_notes排在explanation休息边界之后" in prompt
         assert "每项内容只计入上述一个字段，不遗漏、不重复累计" in prompt
         assert "when按所选输出语言明确" in prompt
     assert all("若距上次休息已专注约25分钟，休息5分钟；时间未到可继续" in prompt
                for schema, prompt, _ in provider.calls if schema != "SectionSourceReview")
+
+
+async def test_method_basis_and_guidance_plan_reach_review_without_erasing_process_cards(workspace):
+    from learnmargin.pipeline import load_methods
+
+    store, output = workspace
+    planned = plan()
+    planned["method_chapters"] = [4, 7, 8, 11]
+    planned["sections"][0]["guidance_focus"] = "初学先跟随完整示范，标记最早不理解的转折。"
+    planned["sections"][1]["guidance_focus"] = "独立练习前保留尝试，核对后用第一处差异决定回查位置。"
+    first, second = section(1), section(2)
+    first["study_prompts"][0]["placement"] = "before_example"
+    second["practice"] = [{"id": "s2-q1", "prompt": "两事件概率均为1/2，交集为1/4，是否独立？",
+                           "hint": "比较交集与乘积。", "answer": "乘积与交集相等，所以独立。"}]
+    second["study_load"]["practice_minutes"] = 6
+    second["study_prompts"] = [
+        {"id": "s2-a1", "kind": "action", "placement": "before_practice", "when": "做题前",
+         "task": "先保留独立尝试；卡住时记录第一处不确定的步骤，再使用题目提示。",
+         "check": "完成后通过题目下方的答案入口核对，再闭卷重做。", "answer": None},
+        {"id": "s2-a2", "kind": "question", "placement": "after_example", "when": "看懂例题后",
+         "task": "独立性的等式比较哪两个量？", "check": "", "answer": "交集概率与两个边际概率的乘积。"},
+    ]
+    provider = SequenceProvider([planned, first, second])
+    lesson = await generate_lesson(request(), [document()], store, output, provider, lambda *_: None)
+    basis = load_methods(planned["method_chapters"])
+    for name, prompt, _ in provider.calls:
+        if name == "GeneratedLessonSection":
+            assert basis in prompt
+            assert all(item["guidance_focus"] in prompt for item in planned["sections"])
+    assert len(provider.calls) == 6  # same plan/draft/review calls; no extra paid review pass
+    process, question = lesson.sections[1].study_prompts
+    assert (process.kind, process.placement, process.answer) == ("action", "before_practice", None)
+    assert question.kind == "question" and question.answer
+    saved = json.loads((output / "section-2.json").read_text(encoding="utf-8"))
+    assert saved["study_prompts"] == [card.model_dump() for card in (process, question)]
+    assert saved["study_load"]["practice_minutes"] == 6
+
+
+def test_new_generation_requires_real_placement_and_keeps_process_answers_distinct():
+    from learnmargin.models import GeneratedLessonSection, LessonSection
+
+    legacy = section(1)
+    legacy["study_prompts"][0].pop("placement")
+    assert LessonSection.model_validate(legacy).study_prompts[0].placement is None
+    with pytest.raises(ValueError):
+        GeneratedLessonSection.model_validate(legacy)
+    legacy["study_prompts"][0]["placement"] = "before_practice"
+    with pytest.raises(ValueError, match="没有练习"):
+        GeneratedLessonSection.model_validate(legacy)
+    legacy["study_prompts"][0]["placement"] = "after_example"
+    legacy["study_prompts"][0]["answer"] = "不应为过程记录伪造答案"
+    with pytest.raises(ValueError, match="流程指导"):
+        GeneratedLessonSection.model_validate(legacy)
 
 
 async def test_topic_selection_cannot_forge_source_locations(workspace):
