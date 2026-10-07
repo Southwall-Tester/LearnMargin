@@ -44,17 +44,21 @@
     }
     function splitter(row) {
       const parts = [...row.children];
-      const pause = row.querySelector(".pause[data-pause-kind]");
       const main = row.querySelector(".main"), aside = row.querySelector("aside");
-      const promptHeight = pause ? [...aside.children].filter(child => child !== pause)
+      // Explicit after_* guidance belongs to the completed block, just like
+      // its planned pause. Keep the entire group on the final fragment.
+      const endCards = [...(aside?.children || [])].filter(child =>
+        child.matches(".study-end, .pause[data-pause-kind]"));
+      const hasEnd = endCards.length > 0;
+      const promptHeight = hasEnd ? [...aside.children].filter(child => !endCards.includes(child))
         .reduce((height, child) => height + child.getBoundingClientRect().height, 0) : 0;
-      const tall = pause ? (promptHeight > main.getBoundingClientRect().height ? aside : main) :
+      const tall = hasEnd ? (promptHeight > main.getBoundingClientRect().height ? aside : main) :
         parts.reduce((a, b) => a.getBoundingClientRect().height >= b.getBoundingClientRect().height ? a : b);
       function textParts(element) {
         const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
         const nodes = []; let node, total = 0;
         while ((node = walker.nextNode())) {
-          if (!node.parentElement.closest(".math, .pause[data-pause-kind]") && node.textContent.length) {
+          if (!node.parentElement.closest(".math, .study-end, .pause[data-pause-kind]") && node.textContent.length) {
             nodes.push({node, start: total}); total += node.textContent.length;
           }
         }
@@ -69,7 +73,7 @@
         }};
       }
       const primary = textParts(tall), total = primary.total;
-      const mainParts = pause && tall === aside ? textParts(main) : null;
+      const mainParts = hasEnd && tall === aside ? textParts(main) : null;
       if (total < 30) throw new Error("单个公式、图表或内容块过高，无法安全分页，请拆分内容。");
       function at(target) {
       const fragments = primary.at(target);
@@ -78,11 +82,14 @@
       first.children[position].replaceChildren(fragments[0]);
       second.children[position].replaceChildren(fragments[1]);
       [...second.children].forEach((child, index) => { if (index !== position) child.replaceChildren(); });
+      // Continuations do not duplicate anchors. End-card anchors are moved
+      // below after stripping clones, so their return links still hit the card.
+      removeIds(second);
       let deferredMainId = null;
-      if (pause) {
+      if (hasEnd) {
         if (mainParts) {
           // A long study question may itself span pages. Split it normally,
-          // retaining a real ending of the main text beside the final pause.
+          // retaining a real ending of the main text beside the final cards.
           // Once that short tail is reserved, carry it intact through any
           // further sidebar-only continuations rather than shaving it away.
           const retained = Math.min(80, Math.ceil(mainParts.total / 2));
@@ -101,15 +108,14 @@
           if (mainParts.total - cut <= 80) second.dataset.pauseMainTail = "true";
         }
         for (const fragment of [first, second])
-          fragment.querySelectorAll(".pause[data-pause-kind]").forEach(card => card.remove());
-        first.classList.remove("pause-attached");
-        second.querySelector("aside").append(pause.cloneNode(true));
+          fragment.querySelectorAll(".study-end, .pause[data-pause-kind]").forEach(card => card.remove());
+        first.classList.remove("pause-attached", "study-end-attached");
+        second.querySelector("aside").append(...endCards.map(card => card.cloneNode(true)));
       }
-      removeIds(second);
       if (deferredMainId) second.querySelector(".main").id = deferredMainId;
       return [first, second];
       }
-      return {total, at, minimumTail: pause && tall === main ? Math.min(80, total) : 1};
+      return {total, at, minimumTail: hasEnd && tall === main ? Math.min(80, total) : 1};
     }
     function widenIfNeeded(row) {
       // A formula or a broad table may use the complete A4 text area.
@@ -122,6 +128,20 @@
     function put(row) {
       body.append(row);
       widenIfNeeded(row);
+      const beforeWide = row.classList.contains("full") && row.querySelector(
+        ':scope > aside > .study-start[data-explicit-placement="true"]');
+      if (beforeWide) {
+        // A wide formula uses both columns. Its explicit before-card must
+        // still precede it, rather than falling below it with the whole aside.
+        // Keep origin markers so preservation checks cover the moved text.
+        row.remove();
+        const lead = row.cloneNode(false), emptyMain = row.querySelector(".main").cloneNode(false);
+        const rail = row.querySelector("aside").cloneNode(false);
+        lead.className = "row keep-next study-before-wide";
+        emptyMain.removeAttribute("id");
+        rail.append(beforeWide); lead.append(emptyMain, rail);
+        put(lead); put(row); return;
+      }
       if (!overflow()) return;
       const wasFirst = body.children.length === 1;
       const height = row.getBoundingClientRect().height;

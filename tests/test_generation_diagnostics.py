@@ -10,6 +10,7 @@ from learnmargin.localization import chinese_lesson_text
 from learnmargin.models import (
     APIConfig,
     Document,
+    GeneratedStudyPrompt,
     GenerateRequest,
     LessonPlan,
     LessonSection,
@@ -80,6 +81,28 @@ async def test_schema_repair_locates_missing_answer_without_weakening_answer_req
     assert "$.study_prompts[0]" in repair and "question_answer_required" in repair
     assert "answer" in repair or "参考答案" in repair
     assert "private-generated-prompt" not in repair
+
+
+@pytest.mark.parametrize("protocol", ["chat_completions", "responses"])
+async def test_action_answer_repair_preserves_guidance_without_reflecting_private_values(protocol):
+    good = {"id": "s1-a1", "kind": "action", "placement": "before_practice", "when": "做题前",
+            "task": "先留下尝试，卡住时记录第一处不确定的步骤再看提示。", "check": "", "answer": None}
+    bad = {**good, "answer": "private-process-record-canary"}
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        value = bad if len(requests) == 1 else good
+        return httpx.Response(200, json=envelope(protocol, json.dumps(value, ensure_ascii=False)))
+
+    config = APIConfig(protocol=protocol, base_url="https://model.example/v1", model="test")
+    async with Provider(config, transport=httpx.MockTransport(respond)) as provider:
+        card = await provider.generate(GeneratedStudyPrompt, "Test", "Source material")
+    assert card.kind == "action" and card.answer is None and card.placement == "before_practice"
+    assert len(requests) == 2
+    repair = user_text(requests[1], protocol)
+    assert "action_answer_not_allowed" in repair and "null" in repair
+    assert "private-process-record-canary" not in repair
 
 
 @pytest.mark.parametrize("protocol", ["chat_completions", "responses"])

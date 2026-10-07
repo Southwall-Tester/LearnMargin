@@ -104,6 +104,39 @@ def test_build_uses_self_contained_fonts_and_escaped_title():
     assert script_directive.split()[1:] == expected
 
 
+@pytest.mark.parametrize(("placement", "boundary", "edge"), [
+    ("before_explanation", "explanation", "start"),
+    ("after_explanation", "explanation", "end"),
+    ("before_example", "example", "start"),
+    ("after_example", "example", "end"),
+    ("before_practice", "practice-1", "start"),
+    ("after_practice", "practice-2", "end"),
+])
+def test_explicit_prompt_placement_routes_to_the_learning_block(placement, boundary, edge):
+    lesson = example_lesson()
+    section = lesson.sections[0]
+    section.practice.append(Practice(id="P2", prompt="Second exercise", hint="Use the same method", answer="2"))
+    section.study_prompts[0].placement = placement
+    soup = BeautifulSoup(build_html(lesson), "html.parser")
+    card = soup.select_one("#prompt-1-1")
+    assert card.find_parent(class_="row")["data-boundary"] == boundary
+    assert card.find_parent(attrs={"data-study-edge": True})["data-study-edge"] == edge
+    assert len(soup.select("#prompt-1-1")) == 1
+    assert soup.select_one('#prompt-answer-1-1 a[href="#prompt-1-1"]')
+
+
+def test_legacy_prompt_positions_remain_at_explanation_and_example_start():
+    lesson = example_lesson()
+    lesson.sections[0].study_prompts.append(StudyPrompt(
+        id="S2", kind="action", when="After reading", task="Record the current page.", check="", answer=None,
+    ))
+    soup = BeautifulSoup(build_html(lesson), "html.parser")
+    for number, boundary in [(1, "explanation"), (2, "example")]:
+        card = soup.select_one(f"#prompt-1-{number}")
+        assert card.find_parent(class_="row")["data-boundary"] == boundary
+        assert card.find_parent(attrs={"data-study-edge": True})["data-study-edge"] == "start"
+
+
 @pytest.mark.integration
 async def test_portable_html_csp_blocks_unapproved_scripts_handlers_and_local_reads(tmp_path: Path):
     html = build_html(example_lesson(practice=False))
@@ -382,6 +415,163 @@ async def test_operation_prompt_does_not_create_an_answer_section(tmp_path: Path
     )
     result = await render_lesson(lesson, tmp_path)
     assert result["answer_section_page"] == 0
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("layout", ["a4", "wide"])
+async def test_guidance_positions_survive_pagination_and_bidirectional_navigation(tmp_path: Path, layout):
+    lesson = example_lesson(long=True)
+    section = lesson.sections[0]
+    section.explanation += "\n\nEXPLANATION_END_MARKER: This completes the explanation."
+    section.practice[0].prompt = "PRACTICE_START_MARKER: " + section.practice[0].prompt
+    # Reverse the array's display order deliberately: IDs/answers follow the
+    # authoring order, while placement follows the learning activity.
+    section.study_prompts = [
+        StudyPrompt(id="S1", kind="action", placement="before_practice", when="Before practising",
+                    task="TRY_FIRST_MARKER: Record independent, hinted, or stuck for each attempt.",
+                    check="Record the first uncertain step before opening the answer.", answer=None),
+        StudyPrompt(id="S2", kind="question", placement="after_explanation", when="After the explanation",
+                    task="RECALL_END_MARKER: Close the explanation and identify the denominator.",
+                    check="Check the conditioning event.", answer="RECALL_ANSWER_MARKER: The denominator is P(B)."),
+    ]
+    result = await render_lesson(lesson, tmp_path, layout=layout)
+    assert result["content_preserved"] and result["overflow"] == []
+    assert result["orphan_heading_pages"] == [] and result["pause_only_pages"] == []
+    assert len(result["sidebar_navigation"]) == 1 and len(result["pause_positions"]) == 1
+    pause = result["pause_positions"][0]
+    assert pause["boundary"] == "practice-1" and pause["at_boundary_end"] and not pause["orphaned"]
+    pair = result["sidebar_navigation"][0]
+    assert pair["prompt"]["id"] == "prompt-1-2"
+    assert pair["prompt"]["page"] in pair["answer"]["linked_from_pages"]
+    assert pair["answer"]["page"] in pair["prompt"]["linked_from_pages"]
+    for target in pair.values():
+        assert abs(target["left_pt"] - target["expected_left_pt"]) <= 2
+        assert abs(target["top_pt"] - target["expected_top_pt"]) <= 2
+    reader = PdfReader(tmp_path / "lesson.pdf")
+    pdf_pages = [page.extract_text() for page in reader.pages]
+    assert "EXPLANATION_END_MARKER" in pdf_pages[pair["prompt"]["page"] - 1]
+    assert "RECALL_END_MARKER" in pdf_pages[pair["prompt"]["page"] - 1]
+    assert "RECALL_ANSWER_MARKER" not in "".join(pdf_pages[:result["answer_section_page"] - 1])
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.goto((tmp_path / "lesson.html").as_uri())
+            await page.wait_for_function("window.learnmarginReport !== undefined")
+            positions = await page.evaluate("""() => ['prompt-1-1', 'prompt-1-2'].map(id => {
+                const card = document.getElementById(id), row = card.closest('.row');
+                const peers = [...document.querySelectorAll(`.row[data-section="1"][data-boundary="${row.dataset.boundary}"]`)];
+                const rail = row.querySelector('aside').getBoundingClientRect();
+                const bounds = card.getBoundingClientRect();
+                return {boundary: row.dataset.boundary, first: row === peers[0], last: row === peers.at(-1),
+                    inRail: bounds.left >= rail.left && bounds.right <= rail.right + 1};
+            })""")
+            assert positions[0] == {"boundary": "practice-1", "first": True, "last": True, "inRail": True}
+            assert positions[1] == {"boundary": "explanation", "first": False, "last": True, "inRail": True}
+            await page.locator('#prompt-1-2 a[href="#prompt-answer-1-2"]').click()
+            assert await page.evaluate("location.hash") == "#prompt-answer-1-2"
+            await page.locator('#prompt-answer-1-2 a[href="#prompt-1-2"]').click()
+            assert await page.evaluate("location.hash") == "#prompt-1-2"
+            assert await page.locator("#prompt-1-2").evaluate(
+                "node => { const r = node.getBoundingClientRect(); return r.top >= 0 && r.top < innerHeight; }")
+            assert await page.locator("#prompt-1-1 .answer-link").count() == 0
+        finally:
+            await browser.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("placement", ["after_example", "after_practice"])
+async def test_after_guidance_and_pause_share_the_completed_long_block(tmp_path: Path, placement):
+    lesson = example_lesson(practice=placement == "after_practice")
+    section = lesson.sections[0]
+    long_text = "Explain the conditioning event, determine the denominator, and check the calculation. " * 100
+    if placement == "after_example":
+        section.worked_example += "\n\n" + long_text + "\n\nCOMPLETED_BLOCK_MARKER"
+        boundary = "example"
+    else:
+        section.practice.append(Practice(id="P2", prompt=long_text + "\n\nCOMPLETED_BLOCK_MARKER",
+                                         hint="Try first.", answer="Second answer."))
+        boundary = "practice-2"
+    section.study_prompts[0].placement = placement
+    section.study_prompts[0].task = "AFTER_BLOCK_MARKER: Explain the denominator without consulting the solution."
+    result = await render_lesson(lesson, tmp_path)
+    assert result["content_preserved"] and result["overflow"] == []
+    assert result["orphan_heading_pages"] == [] and result["pause_only_pages"] == []
+    assert len(result["pause_positions"]) == 1
+    pause = result["pause_positions"][0]
+    assert pause["boundary"] == boundary and pause["at_boundary_end"] and not pause["orphaned"]
+    pair = result["sidebar_navigation"][0]
+    assert pair["prompt"]["page"] == pause["page"]
+    text = PdfReader(tmp_path / "lesson.pdf").pages[pause["page"] - 1].extract_text()
+    assert "COMPLETED_BLOCK_MARKER" in text and "AFTER_BLOCK_MARKER" in text
+    assert pair["prompt"]["page"] in pair["answer"]["linked_from_pages"]
+    assert pair["answer"]["page"] in pair["prompt"]["linked_from_pages"]
+
+
+@pytest.mark.integration
+async def test_before_guidance_stays_before_a_formula_using_the_full_page_width(tmp_path: Path):
+    lesson = example_lesson(practice=False)
+    section = lesson.sections[0]
+    section.study_prompts[0].placement = "before_example"
+    section.worked_example += (
+        r" $$P(A\mid B)+P(C\mid B)+P(D\mid B)+P(E\mid B)=\frac{P(A\cap B)+P(C\cap B)}{P(B)}.$$"
+    )
+    result = await render_lesson(lesson, tmp_path)
+    assert result["content_preserved"] and result["overflow"] == []
+    assert result["orphan_heading_pages"] == []
+    assert len(result["sidebar_navigation"]) == 1 and len(result["pause_positions"]) == 1
+    assert result["pause_positions"][0]["boundary"] == "example"
+    assert result["pause_positions"][0]["at_boundary_end"]
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.goto((tmp_path / "lesson.html").as_uri())
+            await page.wait_for_function("window.learnmarginReport !== undefined")
+            position = await page.evaluate("""() => {
+                const card = document.getElementById('prompt-1-1');
+                const content = document.querySelector('.row.full[data-boundary="example"] .main');
+                const rail = card.closest('aside').getBoundingClientRect(), bounds = card.getBoundingClientRect();
+                return {before: bounds.bottom <= content.getBoundingClientRect().top,
+                    inRail: bounds.left >= rail.left && bounds.right <= rail.right + 1};
+            }""")
+            assert position == {"before": True, "inRail": True}
+        finally:
+            await browser.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("block", ["example", "practice"])
+async def test_narrow_reader_keeps_before_and_after_cards_on_their_respective_sides(tmp_path, block):
+    lesson = example_lesson()
+    section = lesson.sections[0]
+    section.study_prompts = [
+        StudyPrompt(id="before", kind="action", placement=f"before_{block}", when="开始前",
+                    task="先保留尝试，遇到困难再使用提示。", check=""),
+        StudyPrompt(id="after", kind="action", placement=f"after_{block}", when="完成后",
+                    task="按实际卡点选择下次重做的部分。", check=""),
+    ]
+    await render_lesson(lesson, tmp_path)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={"width": 390, "height": 844})
+            await page.goto((tmp_path / "lesson.html").as_uri())
+            await page.wait_for_function("window.learnmarginReport !== undefined")
+            await page.evaluate("document.documentElement.classList.add('embedded-reader')")
+            bounds = await page.evaluate("""boundary => {
+                const first = document.getElementById('prompt-1-1').getBoundingClientRect();
+                const last = document.getElementById('prompt-1-2').getBoundingClientRect();
+                const rows = [...document.querySelectorAll('#pages .row[data-boundary="' + boundary + '"]')];
+                const mains = rows.map(row => row.querySelector('.main').getBoundingClientRect());
+                const pause = rows.flatMap(row => [...row.querySelectorAll('.pause')])[0]?.getBoundingClientRect();
+                return {before: first.bottom <= mains[0].top, after: last.top >= mains.at(-1).bottom,
+                    pauseAfter: !pause || pause.top >= last.bottom,
+                    noOverflow: document.documentElement.scrollWidth <= window.innerWidth};
+            }""", "example" if block == "example" else "practice-1")
+            assert bounds == {"before": True, "after": True, "pauseAfter": True, "noOverflow": True}
+        finally:
+            await browser.close()
 
 
 @pytest.mark.integration

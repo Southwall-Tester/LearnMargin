@@ -144,9 +144,23 @@ def build_html(lesson: Lesson, *, layout: str = "a4") -> str:
         section = lesson.sections[point["section"] - 1]
         pause = section.pause if point["kind"] == "end" and section.pause else fallback_pause
         pause_cards.setdefault(point["section"], {})[point["boundary"]] = {"kind": point["kind"], "pause": pause}
+    prompt_cards: dict[int, dict[str, dict[str, list[dict[str, Any]]]]] = {}
+    for section_no, section in enumerate(lesson.sections, 1):
+        for prompt_no, prompt in enumerate(section.study_prompts, 1):
+            placement = prompt.placement
+            if placement is None:
+                # Preserve the original positions and answer IDs in saved lessons.
+                boundary, edge = ("explanation" if prompt_no == 1 else "example"), "start"
+            else:
+                edge = "start" if placement.startswith("before_") else "end"
+                block = placement.split("_", 1)[1]
+                boundary = {"explanation": "explanation", "example": "example",
+                            "practice": f"practice-{1 if edge == 'start' else len(section.practice)}"}[block]
+            group = prompt_cards.setdefault(section_no, {}).setdefault(boundary, {"start": [], "end": []})
+            group[edge].append({"prompt": prompt, "number": prompt_no})
     return environment.get_template("lesson.html").render(
         lesson=lesson, text=lesson.text, layout=layout, page_width=210 if layout == "a4" else 286,
-        pause_plan=pause_plan, pause_cards=pause_cards,
+        pause_plan=pause_plan, pause_cards=pause_cards, prompt_cards=prompt_cards,
         has_answers=any(section.practice or any(prompt.answer for prompt in section.study_prompts)
                         for section in lesson.sections),
         source_refs=source_refs, katex_css=Markup(css), katex_script=Markup(katex), script_sources=script_sources,
