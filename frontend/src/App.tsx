@@ -12,6 +12,7 @@ import type { APIConfig, DocumentSummary, GenerateRequest, Job, Scope, Settings,
 import LessonReader from './LessonReader';
 import ConnectionTest from './ConnectionTest';
 import useSectionNavigation from './useSectionNavigation';
+import { version } from '../package.json';
 
 const difficulties = ['刚开始学，需要讲清基础', '看答案会，换题不会', '概念和公式容易混', '记得慢，学后容易忘', '经常拖延，很难开始', '近期有考试，需要自测'];
 const initialConfig: APIConfig = {
@@ -259,7 +260,7 @@ export default function App() {
         <a {...navigationProps('learning')} className="nav-link"><BookOpenCheck size={18} /> 安排学习 <span>03</span></a>
         <a {...navigationProps('result-panel')} className="nav-link"><FileText size={18} /> 我的讲义 <span>04</span></a>
       </nav>
-      <div className="sidebar-footer"><span className={`connection-dot ${settings ? 'online' : ''}`} />{settings ? '本地工作区已连接' : '正在连接本地服务'}<span>v0.1</span></div>
+      <div className="sidebar-footer"><span className={`connection-dot ${settings ? 'online' : ''}`} />{settings ? '本地工作区已连接' : '正在连接本地服务'}<span>v{version}</span></div>
     </aside>
 
     <main id="main" className="main-content">
