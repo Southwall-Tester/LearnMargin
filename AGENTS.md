@@ -15,5 +15,5 @@ This repository contains two independent products: the API-powered local applica
 - PDFs must explain references without requiring other files. Web reading may open source units and must return to the original reading position.
 - No raw model HTML, network-loaded PDF assets, stored API keys, or uploaded user files in commits.
 - Check actual PDF output after renderer changes, not just HTML or page-count assertions.
-- Use feature branches and PRs. Run the README checks, review the diff, and report exact validation limits before merging.
+- This is a solo-developed project. For routine changes, run the README checks, review the diff, then commit and push directly to `main`; feature branches, issues and PRs are not required. Use a temporary branch only when a large or experimental change, parallel work, or an explicit user request warrants isolation. Reuse the existing branch for related work instead of creating a branch per small change. Report actual validation results and limits, and check CI after pushing.
 - Avoid touching another developer's files or committing unrelated local changes. No force push, automatic release tag, or fabricated verification record.
