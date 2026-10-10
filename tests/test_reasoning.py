@@ -40,12 +40,47 @@ def test_toggle_only_model_has_no_fabricated_effort(effort):
     assert reasoning_parameters(config) == {"thinking": {"type": effort}}
 
 
+@pytest.mark.parametrize("model,can_disable", [
+    ("gpt-6-astra", False), ("gpt-6.1-sol", False),
+    ("gpt-6-sol", True), ("gpt-6-luna", True),
+])
+@pytest.mark.parametrize("protocol", ["chat_completions", "responses"])
+async def test_gpt6_native_controls_and_payload_contract(model, can_disable, protocol):
+    efforts = ["low", "medium", "high", "xhigh", "max"]
+    if can_disable:
+        efforts.insert(0, "none")
+    profile = next(p for p in public_reasoning_profiles() if model in p["models"])
+    assert [option["value"] for option in profile["options"]] == efforts
+    for effort in [None, *efforts]:
+        config = APIConfig(base_url="https://api.openai.com/v1", model=model,
+                           protocol=protocol, reasoning_effort=effort)
+        async with Provider(config, transport=httpx.MockTransport(lambda _: None)) as provider:
+            body = provider._payload("system", "user", [])
+        assert body["model"] == model
+        assert "tools" not in body and "thinking" not in body and "max_tokens" not in body
+        if protocol == "responses":
+            assert body["max_output_tokens"] == 12000
+            assert body["text"]["format"] == {"type": "json_object"}
+            assert body.get("reasoning") == ({"effort": effort} if effort else None)
+            assert "reasoning_effort" not in body
+        else:
+            assert body["max_completion_tokens"] == 12000
+            assert body["response_format"] == {"type": "json_object"}
+            assert body.get("reasoning_effort") == effort
+            assert "reasoning" not in body
+    for effort in (["minimal"] if can_disable else ["minimal", "none"]):
+        with pytest.raises(ValueError, match="不支持"):
+            validate_api_config(config.model_copy(update={"reasoning_effort": effort}))
+
+
 @pytest.mark.parametrize("overrides", [
     {"reasoning_effort": "medium"},
     {"base_url": "https://gateway.example/v1"},
     {"base_url": "https://api.deepseek.com.evil.example"},
     {"base_url": "https://api.deepseek.com/custom"},
     {"model": "deepseek-flash-unknown"},
+    {"base_url": "https://api.openai.com/v1", "model": "gpt-6"},
+    {"base_url": "https://api.openai.com/v1", "model": "gpt-6-astra-unknown"},
     {"base_url": "https://api.z.ai/api/paas/v4", "model": "glm-5.3-flash", "reasoning_effort": "none"},
     {"base_url": "https://api.z.ai/api/paas/v4", "model": "glm-5.3-flash", "protocol": "responses"},
     {"base_url": "https://api.z.ai/api/paas/v4", "model": "glm-4.7"},

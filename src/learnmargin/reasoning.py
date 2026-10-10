@@ -27,6 +27,10 @@ PROFILES = [
     _profile(_ZAI, ["glm-5.3", "glm-5.3-flash", "glm-5.3-flashx"],
              ["chat_completions"], ["low", "high", "max"], "effort", "此模型必须开启思考。"),
     _profile(_ZAI, ["glm-4.7"], ["chat_completions"], ["enabled", "disabled"], "toggle"),
+    _profile(_OPENAI, ["gpt-6-astra", "gpt-6.1-sol"], ["chat_completions", "responses"],
+             ["low", "medium", "high", "xhigh", "max"], "effort", "此模型不支持关闭思考。"),
+    _profile(_OPENAI, ["gpt-6-sol", "gpt-6-luna"], ["chat_completions", "responses"],
+             ["none", "low", "medium", "high", "xhigh", "max"], "effort"),
     _profile(_OPENAI, ["gpt-5", "gpt-5-mini", "gpt-5-nano"],
              ["chat_completions", "responses"], ["minimal", "low", "medium", "high"], "effort"),
     _profile(_OPENAI, ["gpt-5.1"], ["chat_completions", "responses"],
@@ -55,7 +59,7 @@ def reasoning_parameters(config: APIConfig) -> dict:
         return {}
     profile = reasoning_profile(config)
     if profile is None:
-        raise ValueError("尚未确认此服务、协议和模型的思考选项，请选择“不指定”后重试。")
+        raise ValueError("此服务地址、协议和模型组合尚未适配思考设置，请选择“不指定”后重试。")
     if effort not in {option["value"] for option in profile["options"]}:
         raise ValueError("此模型不支持所选思考设置，请按当前模型的可用选项重新选择。")
     if profile["adapter"] == "toggle":

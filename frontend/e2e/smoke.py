@@ -90,6 +90,20 @@ def main() -> None:
         page.get_by_role('button', name='OpenAI', exact=True).click()
         page.get_by_label('模型名称', exact=True).fill('gpt-5.2')
         assert selector.locator('option').evaluate_all('(items) => items.map(i => i.value)') == ['', 'none', 'low', 'medium', 'high', 'xhigh']
+        for model, can_disable in [('gpt-6-astra', False), ('gpt-6.1-sol', False),
+                                   ('gpt-6-sol', True), ('gpt-6-luna', True)]:
+            page.get_by_label('模型名称', exact=True).fill(model)
+            for protocol in ('chat_completions', 'responses'):
+                page.get_by_label('接口协议').select_option(protocol)
+                options = ['', *(['none'] if can_disable else []), 'low', 'medium', 'high', 'xhigh', 'max']
+                assert selector.locator('option').evaluate_all('(items) => items.map(i => i.value)') == options
+                selector.select_option('max')
+                expect(selector).to_have_value('max')
+        for width in (1440, 390):
+            page.set_viewport_size({'width': width, 'height': 1000})
+            assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+            page.locator('#model-settings').screenshot(path=str(output / f'gpt6-settings-{width}.png'))
+        report['checks'].append('four_gpt6_models_native_options_both_protocols')
         selector.select_option('xhigh')
         page.get_by_label('API 地址', exact=True).fill('https://gateway.example/v1')
         expect(selector).to_be_disabled()

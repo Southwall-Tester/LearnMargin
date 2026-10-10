@@ -280,7 +280,7 @@ export default function App() {
         <label className="field">思考设置<select aria-label="思考设置" disabled={!reasoning} value={config.reasoning_effort ?? ''} onChange={event => changeConfig('reasoning_effort', (event.target.value || null) as APIConfig['reasoning_effort'])}>
           <option value="">不指定（使用服务默认设置）</option>
           {reasoning?.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select><span className="helper">{reasoning ? `${reasoning.note}不指定时不发送思考参数。` : '尚未确认此服务、协议和模型的思考选项，将使用服务默认设置。'}</span></label>
+        </select><span className="helper">{reasoning ? `${reasoning.note}不指定时不发送思考参数。` : '此服务地址、协议和模型组合尚未适配思考设置，将使用服务默认设置。'}</span></label>
         {reasoningNotice && <p className="helper" role="status">{reasoningNotice}</p>}
         <div className="capability-row"><label className="checkbox-label"><input type="checkbox" checked={config.vision} onChange={event => changeConfig('vision', event.target.checked)} />模型支持图片理解</label><label className="checkbox-label"><input type="checkbox" checked={config.json_mode} onChange={event => changeConfig('json_mode', event.target.checked)} />启用 JSON 输出模式</label><label className="timeout-label">单次请求超时<input aria-label="请求超时秒数" type="number" min={10} max={600} value={config.timeout_seconds} onChange={event => changeConfig('timeout_seconds', Math.max(10, Math.min(600, Number(event.target.value) || 180)))} />秒</label></div>
         <p className="helper"><CircleHelp size={14} />按所选模型实际能力配置。关闭图片理解后，扫描页、图片中的图表或公式可能无法读取；请使用视觉模型或提供可提取的文本。</p>
