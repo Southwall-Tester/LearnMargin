@@ -7,7 +7,7 @@ import {
   Trash2, TriangleAlert, UploadCloud, X,
 } from 'lucide-react';
 import { localArtifact, post, request } from './api';
-import { configError, displayProgress, loadModelPreferences, saveModelPreferences, scopeError, statusLabels } from './domain';
+import { configError, displayProgress, loadModelPreferences, reasoningProfile, saveModelPreferences, scopeError, statusLabels, supportsReasoning } from './domain';
 import type { APIConfig, DocumentSummary, GenerateRequest, Job, Scope, Settings, UnitDetail } from './types';
 import LessonReader from './LessonReader';
 import ConnectionTest from './ConnectionTest';
@@ -43,6 +43,8 @@ export default function App() {
   const [config, setConfig] = useState<APIConfig>(initialConfig);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsNotice, setSettingsNotice] = useState('');
+  const [reasoningNotice, setReasoningNotice] = useState('');
+  const reasoning = reasoningProfile(config, settings?.reasoning_profiles);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [scope, setScope] = useState<Scope>({ mode: 'all', ranges: {}, topics: '', include_prerequisites: true });
@@ -79,7 +81,13 @@ export default function App() {
     const controller = new AbortController();
     request<Settings>('/api/settings', { signal: controller.signal }).then(data => {
       setSettings(data);
-      setConfig({ ...initialConfig, ...serverModelConfig(data), ...loadModelPreferences(), api_key: '' });
+      const restored = { ...initialConfig, ...serverModelConfig(data), ...loadModelPreferences(), api_key: '' };
+      if (!supportsReasoning(restored, data.reasoning_profiles)) {
+        restored.reasoning_effort = null;
+        saveModelPreferences(restored);
+        setReasoningNotice('已保存的思考选项不适用于当前配置，已恢复“不指定”，请重新选择。');
+      }
+      setConfig(restored);
     }).catch(error => { if (!controller.signal.aborted) setError(errorText(error)); });
     return () => controller.abort();
   }, []);
@@ -218,18 +226,23 @@ export default function App() {
   }
 
   function applyPreset(preset: string) {
+    if (config.reasoning_effort != null) setReasoningNotice('连接配置已更改，思考设置已恢复“不指定”，请按当前模型重新选择。');
     if (preset === 'deepseek') {
-      setConfig(current => ({ ...current, base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'chat_completions', vision: true, json_mode: true }));
+      setConfig(current => ({ ...current, reasoning_effort: null, base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'chat_completions', vision: true, json_mode: true }));
     } else if (preset === 'openai') {
-      setConfig(current => ({ ...current, base_url: 'https://api.openai.com/v1', model: '', protocol: 'responses', vision: true, json_mode: true }));
+      setConfig(current => ({ ...current, reasoning_effort: null, base_url: 'https://api.openai.com/v1', model: '', protocol: 'responses', vision: true, json_mode: true }));
     } else if (preset === 'compatible') {
-      setConfig(current => ({ ...current, base_url: '', model: '', protocol: 'chat_completions', vision: false, json_mode: true }));
+      setConfig(current => ({ ...current, reasoning_effort: null, base_url: '', model: '', protocol: 'chat_completions', vision: false, json_mode: true }));
     }
     setSettingsNotice('');
   }
 
   function changeConfig<K extends keyof APIConfig>(key: K, value: APIConfig[K]) {
-    setConfig(current => ({ ...current, [key]: value })); setSettingsNotice('');
+    const identityChanged = ['base_url', 'model', 'protocol'].includes(key) && config[key] !== value;
+    if (identityChanged && config.reasoning_effort != null) setReasoningNotice('连接配置已更改，思考设置已恢复“不指定”，请按当前模型重新选择。');
+    if (key === 'reasoning_effort') setReasoningNotice('');
+    setConfig(current => ({ ...current, [key]: value, ...(identityChanged ? { reasoning_effort: null } : {}) }));
+    setSettingsNotice('');
   }
 
   function handleDrop(event: DragEvent<HTMLButtonElement>) {
@@ -264,9 +277,11 @@ export default function App() {
           <label className="field">API Key <span className="optional">仅保留在当前页面内存</span><input value={config.api_key} type="password" autoComplete="off" name="learnmargin-api-key" onChange={event => changeConfig('api_key', event.target.value)} placeholder={settings?.api.has_api_key ? '已配置服务端密钥，可在此覆盖' : '填写你的 API Key'} /></label>
           <label className="field">接口协议<select value={config.protocol} onChange={event => changeConfig('protocol', event.target.value as APIConfig['protocol'])}><option value="chat_completions">Chat Completions（通用兼容）</option><option value="responses">Responses</option></select></label>
         </div>
-        <label className="field">思考强度<select aria-label="思考强度" value={config.reasoning_effort ?? ''} onChange={event => changeConfig('reasoning_effort', (event.target.value || null) as APIConfig['reasoning_effort'])}>
-          <option value="">不指定</option><option value="low">低（low）</option><option value="medium">中（medium）</option><option value="high">高（high）</option><option value="max">最高（max）</option>
-        </select><span className="helper">仅在服务支持时指定；降低强度可能减少等待，也可能影响复杂推理质量。</span></label>
+        <label className="field">思考设置<select aria-label="思考设置" disabled={!reasoning} value={config.reasoning_effort ?? ''} onChange={event => changeConfig('reasoning_effort', (event.target.value || null) as APIConfig['reasoning_effort'])}>
+          <option value="">不指定（使用服务默认设置）</option>
+          {reasoning?.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select><span className="helper">{reasoning ? `${reasoning.note}不指定时不发送思考参数。` : '尚未确认此服务、协议和模型的思考选项，将使用服务默认设置。'}</span></label>
+        {reasoningNotice && <p className="helper" role="status">{reasoningNotice}</p>}
         <div className="capability-row"><label className="checkbox-label"><input type="checkbox" checked={config.vision} onChange={event => changeConfig('vision', event.target.checked)} />模型支持图片理解</label><label className="checkbox-label"><input type="checkbox" checked={config.json_mode} onChange={event => changeConfig('json_mode', event.target.checked)} />启用 JSON 输出模式</label><label className="timeout-label">单次请求超时<input aria-label="请求超时秒数" type="number" min={10} max={600} value={config.timeout_seconds} onChange={event => changeConfig('timeout_seconds', Math.max(10, Math.min(600, Number(event.target.value) || 180)))} />秒</label></div>
         <p className="helper"><CircleHelp size={14} />按所选模型实际能力配置。关闭图片理解后，扫描页、图片中的图表或公式可能无法读取；请使用视觉模型或提供可提取的文本。</p>
         <ConnectionTest config={config} />

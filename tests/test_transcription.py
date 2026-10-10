@@ -136,7 +136,8 @@ async def test_transcription_cache_is_invalidated_by_relevant_changes(tmp_path, 
     elif change == "mode":
         mode = "handwritten"
     elif change == "rules":
-        monkeypatch.setattr("learnmargin.transcription.TRANSCRIPTION_VERSION", 2)
+        from learnmargin import transcription
+        monkeypatch.setattr(transcription, "TRANSCRIPTION_VERSION", transcription.TRANSCRIPTION_VERSION + 1)
     else:
         store.transcription_cache(DOC_ID, 1).write_text("broken json")
     await transcribe_sources(make_units([doc]), store, tmp_path / "second", reader,

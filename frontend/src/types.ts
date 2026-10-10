@@ -6,10 +6,17 @@ export type APIConfig = {
   json_mode: boolean;
   api_key: string;
   timeout_seconds: number;
-  reasoning_effort?: 'low' | 'medium' | 'high' | 'max' | null;
+  reasoning_effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'enabled' | 'disabled' | null;
+};
+
+export type ReasoningProfile = {
+  endpoints: string[]; models: string[]; protocols: APIConfig['protocol'][];
+  options: { value: NonNullable<APIConfig['reasoning_effort']>; label: string }[];
+  note: string;
 };
 
 export type Settings = {
+  reasoning_profiles?: ReasoningProfile[];
   api: Omit<APIConfig, 'api_key' | 'timeout_seconds'> & { has_api_key: boolean };
   limits: { max_upload_mb: number; max_documents: number };
   formats: string[];

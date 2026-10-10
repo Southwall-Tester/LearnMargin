@@ -4,6 +4,7 @@ import App from './App';
 import type { GenerateRequest } from './types';
 
 const settings = {
+  reasoning_profiles: [{ endpoints: ['https://api.deepseek.com', 'https://api.deepseek.com/v1'], models: ['deepseek-flash'], protocols: ['chat_completions', 'responses'], options: ['none', 'low', 'high', 'max'].map(value => ({ value, label: value })), note: '' }],
   api: { base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'chat_completions', vision: true, json_mode: true, has_api_key: false },
   limits: { max_upload_mb: 30, max_documents: 8 }, formats: ['pdf', 'pptx', 'docx', 'txt'],
   capabilities: { libreoffice: false, browser: true }, demo_available: true,
@@ -37,6 +38,35 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('workspace generation', () => {
+  it('shows only native options and clears effort when the connection changes', async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /deepseek-flash/ }));
+    const selector = screen.getByLabelText('思考设置');
+    expect(Array.from((selector as HTMLSelectElement).options).map(option => option.value)).toEqual(['', 'none', 'low', 'high', 'max']);
+    fireEvent.change(selector, { target: { value: 'high' } });
+    fireEvent.change(screen.getByLabelText('接口协议'), { target: { value: 'responses' } });
+    expect(selector).toHaveValue('');
+    expect(screen.getByText(/连接配置已更改/)).toBeInTheDocument();
+    fireEvent.change(selector, { target: { value: 'low' } });
+    fireEvent.change(screen.getByLabelText('模型名称'), { target: { value: 'unknown-model' } });
+    expect(selector).toHaveValue('');
+    expect(selector).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'DeepSeek' }));
+    fireEvent.change(selector, { target: { value: 'max' } });
+    fireEvent.click(screen.getByRole('button', { name: 'OpenAI' }));
+    expect(selector).toHaveValue('');
+    expect(selector).toBeDisabled();
+  });
+
+  it('migrates an incompatible saved effort with a visible notice', async () => {
+    localStorage.setItem('learnmargin.model-preferences.v1', JSON.stringify({ ...settings.api, reasoning_effort: 'medium' }));
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /deepseek-flash/ }));
+    expect(screen.getByLabelText('思考设置')).toHaveValue('');
+    expect(screen.getByText(/已保存的思考选项不适用于当前配置/)).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem('learnmargin.model-preferences.v1')!).reasoning_effort).toBeNull();
+  });
+
   it.each(['a4', 'wide'] as const)('uploads material, validates ranges, and submits %s without a chapter count', async layout => {
     render(<App />);
     await screen.findByRole('button', { name: /deepseek-flash/ });
@@ -52,7 +82,7 @@ describe('workspace generation', () => {
     fireEvent.change(range, { target: { value: '1-2，4' } });
     fireEvent.click(screen.getByRole('button', { name: /deepseek-flash/ }));
     fireEvent.change(screen.getByLabelText(/API Key/), { target: { value: 'private-key' } });
-    fireEvent.change(screen.getByLabelText('思考强度'), { target: { value: 'low' } });
+    fireEvent.change(screen.getByLabelText('思考设置'), { target: { value: 'low' } });
     fireEvent.click(screen.getByRole('button', { name: '看答案会，换题不会' }));
     expect(screen.queryByLabelText('讲解章节数')).not.toBeInTheDocument();
     expect(screen.getByLabelText('PDF 版式')).toHaveValue('a4');

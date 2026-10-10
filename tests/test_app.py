@@ -31,6 +31,26 @@ def upload(client):
     return response.json()
 
 
+def test_reasoning_capabilities_and_invalid_choices_at_http_boundary(client, monkeypatch):
+    from learnmargin.reasoning import public_reasoning_profiles
+
+    assert client.get("/api/settings").json()["reasoning_profiles"] == public_reasoning_profiles()
+    document = upload(client)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("An invalid effort must not start a provider or job")
+
+    monkeypatch.setattr("learnmargin.app.Provider", forbidden)
+    api = {"base_url": "https://api.z.ai/api/paas/v4", "model": "glm-5.3-flash",
+           "reasoning_effort": "medium", "api_key": "fake-test-key"}
+    for path, body in [("/api/connection-test", api),
+                       ("/api/jobs", {"document_ids": [document["id"]], "api": api})]:
+        response = client.post(path, json=body)
+        assert response.status_code == 400
+        assert "思考" in response.json()["detail"]
+    assert client.get("/api/jobs").json() == []
+
+
 def wait_job(client, job_id):
     for _ in range(100):
         job = client.get(f"/api/jobs/{job_id}").json()

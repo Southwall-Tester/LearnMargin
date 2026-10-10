@@ -31,6 +31,7 @@ from .models import APIConfig, ConnectionTestResult, GenerateRequest
 from .office_sandbox import sandbox_backend
 from .pipeline import generate_lesson, parse_range
 from .provider import Provider
+from .reasoning import public_reasoning_profiles
 from .storage import Store, atomic_json, new_id, now
 
 ARTIFACTS = {"lesson.pdf": "application/pdf", "lesson.html": "text/html", "lesson.json": "application/json",
@@ -190,7 +191,8 @@ def create_app(root: Path | None = None) -> FastAPI:
                 browser = Path(playwright.chromium.executable_path).is_file()
         except Exception:
             pass
-        return {"api": values, "limits": {"max_upload_mb": MAX_UPLOAD_BYTES // 1024 // 1024, "max_documents": 8},
+        return {"api": values, "reasoning_profiles": public_reasoning_profiles(),
+                "limits": {"max_upload_mb": MAX_UPLOAD_BYTES // 1024 // 1024, "max_documents": 8},
                 "formats": sorted(SUPPORTED_EXTENSIONS), "capabilities": {
                     "libreoffice": local_office_enabled() and isolation is not None,
                     "office_sandbox": isolation,

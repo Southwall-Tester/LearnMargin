@@ -38,7 +38,9 @@ class APIConfig(Model):
     vision: bool = True
     json_mode: bool = True
     timeout_seconds: int = Field(default=180, ge=10, le=600)
-    reasoning_effort: Literal["low", "medium", "high", "max"] | None = None
+    reasoning_effort: Literal[
+        "none", "minimal", "low", "medium", "high", "xhigh", "max", "enabled", "disabled"
+    ] | None = None
 
 
 class ConnectionTestResult(Model):

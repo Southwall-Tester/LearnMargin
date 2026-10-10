@@ -1,4 +1,20 @@
-import type { APIConfig, DocumentSummary, Scope } from './types';
+import type { APIConfig, DocumentSummary, ReasoningProfile, Scope } from './types';
+
+export function reasoningProfile(config: APIConfig, profiles: ReasoningProfile[] = []): ReasoningProfile | undefined {
+  if (apiUrlError(config.base_url)) return undefined;
+  const url = new URL(config.base_url.trim());
+  let path = url.pathname.replace(/\/+$/, '');
+  for (const suffix of ['/chat/completions', '/responses']) {
+    if (path.endsWith(suffix)) path = path.slice(0, -suffix.length);
+  }
+  const endpoint = `${url.origin}${path}`.replace(/\/+$/, '');
+  return profiles.find(profile => profile.endpoints.includes(endpoint)
+    && profile.models.includes(config.model.trim()) && profile.protocols.includes(config.protocol));
+}
+
+export function supportsReasoning(config: APIConfig, profiles: ReasoningProfile[] = []): boolean {
+  return config.reasoning_effort == null || Boolean(reasoningProfile(config, profiles)?.options.some(option => option.value === config.reasoning_effort));
+}
 
 export function rangeError(value: string, total: number): string | null {
   if (!value.trim()) return '请填写学习范围。';
@@ -77,7 +93,7 @@ export function loadModelPreferences(): Partial<Omit<APIConfig, 'api_key'>> {
     if (source.protocol === 'chat_completions' || source.protocol === 'responses') result.protocol = source.protocol;
     if (typeof source.vision === 'boolean') result.vision = source.vision;
     if (typeof source.json_mode === 'boolean') result.json_mode = source.json_mode;
-    if (source.reasoning_effort === null || ['low', 'medium', 'high', 'max'].includes(source.reasoning_effort as string)) result.reasoning_effort = source.reasoning_effort as APIConfig['reasoning_effort'];
+    if (source.reasoning_effort === null || ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'enabled', 'disabled'].includes(source.reasoning_effort as string)) result.reasoning_effort = source.reasoning_effort as APIConfig['reasoning_effort'];
     if (typeof source.timeout_seconds === 'number' && source.timeout_seconds >= 10 && source.timeout_seconds <= 600) result.timeout_seconds = source.timeout_seconds;
     // Remove legacy URL credentials and secret/unknown fields instead of merely
     // ignoring them while leaving their values in browser storage.

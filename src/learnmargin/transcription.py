@@ -12,7 +12,8 @@ from .models import Model
 from .provider import MAX_IMAGE_BYTES, ProviderError
 from .storage import atomic_json
 
-TRANSCRIPTION_VERSION = 1
+# Invalidate v1: unset DeepSeek effort no longer implicitly disables thinking.
+TRANSCRIPTION_VERSION = 2
 
 
 class PageTranscription(Model):

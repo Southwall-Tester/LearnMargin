@@ -31,7 +31,7 @@ def config(protocol="chat_completions", **kwargs):
 
 
 @pytest.mark.parametrize("protocol", ["chat_completions", "responses"])
-@pytest.mark.parametrize("effort", [None, "low", "medium", "high", "max"])
+@pytest.mark.parametrize("effort", [None, "none", "low", "medium", "high", "xhigh"])
 async def test_explicit_reasoning_effort_is_forwarded_without_changing_model(protocol, effort):
     sent = []
 
@@ -39,9 +39,15 @@ async def test_explicit_reasoning_effort_is_forwarded_without_changing_model(pro
         sent.append(json.loads(request.content))
         return httpx.Response(200, json=envelope(protocol))
 
-    async with Provider(config(protocol, reasoning_effort=effort), transport=httpx.MockTransport(respond)) as client:
+    settings = APIConfig(base_url="https://api.openai.com/v1", model="gpt-5.2",
+                         protocol=protocol, reasoning_effort=effort)
+    async with Provider(settings, transport=httpx.MockTransport(respond)) as client:
         await client.generate(Reply, "system", "user")
-    assert sent[0]["model"] == "test-model"
+        await client.test_connection()
+    assert sent[0]["model"] == "gpt-5.2"
+    limit = "max_output_tokens" if protocol == "responses" else "max_completion_tokens"
+    assert sent[0][limit] == 12000 and sent[1][limit] == 256
+    assert "max_tokens" not in sent[0] and "max_tokens" not in sent[1]
     if effort is None:
         assert "reasoning" not in sent[0] and "reasoning_effort" not in sent[0]
     elif protocol == "responses":
