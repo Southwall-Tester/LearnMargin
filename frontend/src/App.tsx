@@ -20,8 +20,8 @@ const initialConfig: APIConfig = {
 };
 
 function serverModelConfig(settings: Settings): Omit<APIConfig, 'api_key' | 'timeout_seconds'> {
-  const { base_url, model, protocol, vision, json_mode } = settings.api;
-  return { base_url, model, protocol, vision, json_mode };
+  const { base_url, model, protocol, vision, json_mode, reasoning_effort } = settings.api;
+  return { base_url, model, protocol, vision, json_mode, reasoning_effort };
 }
 
 function errorText(error: unknown): string {
@@ -264,7 +264,10 @@ export default function App() {
           <label className="field">API Key <span className="optional">仅保留在当前页面内存</span><input value={config.api_key} type="password" autoComplete="off" name="learnmargin-api-key" onChange={event => changeConfig('api_key', event.target.value)} placeholder={settings?.api.has_api_key ? '已配置服务端密钥，可在此覆盖' : '填写你的 API Key'} /></label>
           <label className="field">接口协议<select value={config.protocol} onChange={event => changeConfig('protocol', event.target.value as APIConfig['protocol'])}><option value="chat_completions">Chat Completions（通用兼容）</option><option value="responses">Responses</option></select></label>
         </div>
-        <div className="capability-row"><label className="checkbox-label"><input type="checkbox" checked={config.vision} onChange={event => changeConfig('vision', event.target.checked)} />模型支持图片理解</label><label className="checkbox-label"><input type="checkbox" checked={config.json_mode} onChange={event => changeConfig('json_mode', event.target.checked)} />启用 JSON 输出模式</label><label className="timeout-label">请求超时<input aria-label="请求超时秒数" type="number" min={10} max={600} value={config.timeout_seconds} onChange={event => changeConfig('timeout_seconds', Math.max(10, Math.min(600, Number(event.target.value) || 180)))} />秒</label></div>
+        <label className="field">思考强度<select aria-label="思考强度" value={config.reasoning_effort ?? ''} onChange={event => changeConfig('reasoning_effort', (event.target.value || null) as APIConfig['reasoning_effort'])}>
+          <option value="">不指定</option><option value="low">低（low）</option><option value="medium">中（medium）</option><option value="high">高（high）</option><option value="max">最高（max）</option>
+        </select><span className="helper">仅在服务支持时指定；降低强度可能减少等待，也可能影响复杂推理质量。</span></label>
+        <div className="capability-row"><label className="checkbox-label"><input type="checkbox" checked={config.vision} onChange={event => changeConfig('vision', event.target.checked)} />模型支持图片理解</label><label className="checkbox-label"><input type="checkbox" checked={config.json_mode} onChange={event => changeConfig('json_mode', event.target.checked)} />启用 JSON 输出模式</label><label className="timeout-label">单次请求超时<input aria-label="请求超时秒数" type="number" min={10} max={600} value={config.timeout_seconds} onChange={event => changeConfig('timeout_seconds', Math.max(10, Math.min(600, Number(event.target.value) || 180)))} />秒</label></div>
         <p className="helper"><CircleHelp size={14} />按所选模型实际能力配置。关闭图片理解后，扫描页、图片中的图表或公式可能无法读取；请使用视觉模型或提供可提取的文本。</p>
         <ConnectionTest config={config} />
         <div className="settings-bottom"><span className="helper">生成时，所选材料会发送至你配置的模型服务。</span><button className="button primary small" onClick={() => { const invalid = configError(config); if (invalid) { setError(invalid); return; } saveModelPreferences(config); setSettingsNotice('模型偏好已保存，API Key 未写入浏览器存储。'); }}>保存模型偏好</button></div>

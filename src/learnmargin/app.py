@@ -117,7 +117,9 @@ class Jobs:
             self.store.save_job(job)
             raise
         except Exception as error:
-            job.update(status="failed", stage="生成失败", error=safe_error(error))
+            failed_stage = job["stage"]
+            job.update(status="failed", stage="生成失败", failed_stage=failed_stage,
+                       error=f"{failed_stage}：{safe_error(error)}")
             self.store.save_job(job)
         finally:
             # The request (including its SecretStr) is not retained by the job registry.

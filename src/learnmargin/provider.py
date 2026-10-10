@@ -162,7 +162,10 @@ class Provider:
         except (TimeoutError, httpx.TimeoutException):
             if timeout_seconds is not None:
                 raise ProviderError("连接测试超时，请检查服务状态和网络连接后重试。") from None
-            raise ProviderError("模型响应超时。请缩小学习范围或提高超时时间后重新生成。") from None
+            raise ProviderError(
+                f"模型响应超时（单次请求限时 {limit:g} 秒，包含服务重试与响应读取）。"
+                "可在模型设置中提高请求超时；已完成的逐页识读可在重新生成时复用。"
+            ) from None
         except httpx.HTTPError:
             raise ProviderError("无法连接 API，请检查服务地址和网络连接。") from None
 
@@ -276,6 +279,15 @@ class Provider:
                 result["response_format"] = {"type": "json_object"}
             if urlsplit(self.config.base_url).hostname == "api.deepseek.com":
                 result["thinking"] = {"type": "disabled"}
+        if self.config.reasoning_effort is not None:
+            if self.config.protocol == "responses":
+                result["reasoning"] = {"effort": self.config.reasoning_effort}
+            else:
+                result["reasoning_effort"] = self.config.reasoning_effort
+                # An explicit effort choice must not be contradicted by the
+                # provider-specific default that disables thinking.
+                if urlsplit(self.config.base_url).hostname == "api.deepseek.com":
+                    result["thinking"] = {"type": "enabled"}
         return result
 
     def _text(self, response: dict) -> str:

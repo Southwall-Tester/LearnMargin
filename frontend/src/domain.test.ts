@@ -25,6 +25,13 @@ describe('study ranges', () => {
 });
 
 describe('model preferences', () => {
+  it('preserves an explicit reasoning effort without persisting the key', () => {
+    saveModelPreferences({ ...config, reasoning_effort: 'low' });
+    expect(loadModelPreferences().reasoning_effort).toBe('low');
+    expect(localStorage.getItem('learnmargin.model-preferences.v1')).not.toContain(config.api_key);
+    saveModelPreferences({ ...config, reasoning_effort: null });
+    expect(loadModelPreferences().reasoning_effort).toBeNull();
+  });
   it('never writes an API key, and ignores injected secret fields when reading', () => {
     saveModelPreferences(config);
     expect(JSON.stringify(localStorage)).not.toContain(config.api_key);

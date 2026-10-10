@@ -852,6 +852,55 @@ async def test_page_search_only_transcribes_selected_scan_references_and_keeps_p
             assert f"已转录 {DOC_ID}:2" in prompt
 
 
+async def test_forty_scanned_pages_use_complete_text_for_planning_and_originals_for_teaching(workspace):
+    store, output = workspace
+    folder = store.directory("documents", DOC_ID)
+    folder.mkdir()
+    (folder / "page.png").write_bytes(b"test image")
+    doc = document(images=True, empty=True)
+    doc.units = [SourceUnit(index=i, label=f"第{i}页", text="", image_paths=["page.png"]) for i in range(1, 41)]
+    planned = plan()
+    drafts = [section(1), section(2)]
+    for i in range(2):
+        refs = [f"{DOC_ID}:{n}" for n in range(1 + i * 20, 21 + i * 20)]
+        planned["sections"][i]["source_refs"] = refs
+        drafts[i]["source_refs"] = refs
+
+    class ScanProvider(SequenceProvider):
+        async def generate(self, schema, system, user, images=None):
+            if schema.__name__ == "PageTranscription":
+                self.calls.append((schema.__name__, user, images))
+                ref = json.loads(user.split("单元信息：", 1)[1])[0]["ref"]
+                return schema(text=f"完整识读-{ref}：图中A指向B。", uncertainties=["下标待核对"])
+            return await super().generate(schema, system, user, images)
+
+    provider = ScanProvider([planned, *drafts])
+    lesson = await generate_lesson(GenerateRequest(document_ids=[DOC_ID], reading_mode="handwritten"),
+                                   [doc], store, output, provider, lambda *_: None)
+    assert len(lesson.sources) == 40
+    assert all(not unit.transcription_complete and not unit.text for unit in doc.units)
+    for name, prompt, images in provider.calls:
+        if name == "PageTranscription":
+            assert len(images) == 1
+        elif name in {"LessonPlan", "SectionSourceReview"}:
+            assert not images
+            assert all(f"完整识读-{DOC_ID}:{i}：" in prompt for i in range(1, 41))
+            assert "图中A指向B" in prompt and "下标待核对" in prompt
+        elif name == "GeneratedLessonSection":
+            assert len(images) == 20 and all(path.exists() for path in images)
+
+
+def test_untranscribed_diagrams_still_reach_planning(workspace):
+    store, _ = workspace
+    folder = store.directory("documents", DOC_ID)
+    folder.mkdir()
+    (folder / "page.png").write_bytes(b"test image")
+    doc = document(images=True)
+    doc.units[0].transcription_complete = True
+    content, images = source_content(make_units([doc]), store, True, prefer_transcription=True)
+    assert len(images) == 1 and len(json.loads(content)) == 2
+
+
 @pytest.mark.parametrize("texts", [["足够长的独立内容。" * 4] * 301, ["字" * 20, "字" * 400_001]])
 async def test_prerequisite_candidate_limit_stops_before_any_paid_request(workspace, texts):
     store, output = workspace

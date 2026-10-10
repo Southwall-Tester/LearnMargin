@@ -59,10 +59,10 @@ function apiUrlError(value: string): string | null {
 const preferenceKey = 'learnmargin.model-preferences.v1';
 
 export function saveModelPreferences(config: APIConfig): void {
-  const { base_url, model, protocol, vision, json_mode, timeout_seconds } = config;
+  const { base_url, model, protocol, vision, json_mode, timeout_seconds, reasoning_effort } = config;
   // Guard the storage boundary too, including callers other than the form.
   const safeUrl = apiUrlError(base_url) ? {} : { base_url };
-  try { localStorage.setItem(preferenceKey, JSON.stringify({ ...safeUrl, model, protocol, vision, json_mode, timeout_seconds })); }
+  try { localStorage.setItem(preferenceKey, JSON.stringify({ ...safeUrl, model, protocol, vision, json_mode, timeout_seconds, reasoning_effort })); }
   catch { /* Private browsing or storage limits should not block generation. */ }
 }
 
@@ -77,6 +77,7 @@ export function loadModelPreferences(): Partial<Omit<APIConfig, 'api_key'>> {
     if (source.protocol === 'chat_completions' || source.protocol === 'responses') result.protocol = source.protocol;
     if (typeof source.vision === 'boolean') result.vision = source.vision;
     if (typeof source.json_mode === 'boolean') result.json_mode = source.json_mode;
+    if (source.reasoning_effort === null || ['low', 'medium', 'high', 'max'].includes(source.reasoning_effort as string)) result.reasoning_effort = source.reasoning_effort as APIConfig['reasoning_effort'];
     if (typeof source.timeout_seconds === 'number' && source.timeout_seconds >= 10 && source.timeout_seconds <= 600) result.timeout_seconds = source.timeout_seconds;
     // Remove legacy URL credentials and secret/unknown fields instead of merely
     // ignoring them while leaving their values in browser storage.
