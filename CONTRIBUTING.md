@@ -1,6 +1,6 @@
 # Contributing
 
-This is a solo-developed project. Routine changes are committed and pushed directly to `main` after local validation and diff review; an issue, feature branch or pull request is not required. Use a short-lived branch when a large or experimental change, parallel work, or an explicit request warrants isolation. Reuse an existing branch for related changes. Keep changes focused; changes to learning behavior must update the skill and application together.
+The repository owner may commit and push directly to `main` after local validation and diff review; an issue, feature branch or pull request is not required for the owner's work. Other contributors use feature branches and pull requests. An explicit user request to use a branch takes precedence; otherwise the owner defaults to `main`. Reuse an existing branch for related changes. Keep changes focused; changes to learning behavior must update the skill and application together.
 
 Before committing:
 
