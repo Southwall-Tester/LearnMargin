@@ -52,6 +52,7 @@ describe('workspace generation', () => {
     fireEvent.change(range, { target: { value: '1-2，4' } });
     fireEvent.click(screen.getByRole('button', { name: /deepseek-flash/ }));
     fireEvent.change(screen.getByLabelText(/API Key/), { target: { value: 'private-key' } });
+    fireEvent.change(screen.getByLabelText('思考强度'), { target: { value: 'low' } });
     fireEvent.click(screen.getByRole('button', { name: '看答案会，换题不会' }));
     expect(screen.queryByLabelText('讲解章节数')).not.toBeInTheDocument();
     expect(screen.getByLabelText('PDF 版式')).toHaveValue('a4');
@@ -67,6 +68,7 @@ describe('workspace generation', () => {
     expect(payload.scope.include_prerequisites).toBe(true);
     expect(payload.api.model).toBe('deepseek-flash');
     expect(payload.api.api_key).toBe('private-key');
+    expect(payload.api.reasoning_effort).toBe('low');
     expect(payload.api).not.toHaveProperty('has_api_key');
     expect(payload.learner_notes).toContain('看答案会，换题不会');
     expect(JSON.stringify(localStorage)).not.toContain('private-key');

@@ -2,6 +2,10 @@
 
 `src/learnmargin/models.py` is the shared Python data contract.
 
+`APIConfig.reasoning_effort` is optional (`null`, `low`, `medium`, `high`, `max`); omit provider parameters when unset, otherwise forward as Chat Completions `reasoning_effort` or Responses `reasoning.effort`. Do not change the selected model or silently choose an effort. Provider compatibility remains the user's configuration choice. `timeout_seconds` is the per-request total deadline, including transient retries and response reading.
+
+Successful page transcription is checkpointed per page in the job and cached under the imported document, keyed by source bytes/text/location, transcription rule version, reading mode and non-secret model settings. Timeout and credentials are excluded. Failed/cancelled pages are not cached. Deleting the imported document removes its cache. `SourceUnit.transcription_complete` defaults to false and is set only on runtime copies after validated transcription; originals remain unchanged. Planning/retrieval can use these complete texts without reattaching their images, while chapter writing/review retains images. Job failures include `failed_stage`; per-page state records position and elapsed time. This is transcription reuse, not whole-job resume.
+
 ## Ingestion
 
 `learnmargin.ingestion.extract_document(path: Path, output_dir: Path, document_id: str, original_name: str | None = None) -> Document`

@@ -72,12 +72,13 @@ def make_units(documents: list[Document]) -> dict[str, tuple[Document, SourceUni
 
 
 def source_content(units: dict[str, tuple[Document, SourceUnit]], store: Store,
-                   vision: bool, *, excerpt: int | None = None) -> tuple[str, list[Path]]:
+                   vision: bool, *, excerpt: int | None = None,
+                   prefer_transcription: bool = False) -> tuple[str, list[Path]]:
     records, images = [], []
     for ref, (document, unit) in units.items():
         text = unit.text[:excerpt] if excerpt is not None else unit.text
         record = {"ref": ref, "document": document.name, "location": unit.label, "text": text}
-        if vision:
+        if vision and not (prefer_transcription and unit.transcription_complete):
             positions = []
             for name in unit.image_paths:
                 folder = store.directory("documents", document.id).resolve()
@@ -178,9 +179,9 @@ async def retrieve_related(candidates, query: str, store: Store, provider: Provi
     batches, batch, text_size, image_count, current_document = [], {}, 0, 0, None
     for ref, pair in candidates.items():
         document, unit = pair
-        count = len(unit.image_paths) if vision else 0
+        count = len(unit.image_paths) if vision and not unit.transcription_complete else 0
         if batch and (document.id != current_document or text_size + len(unit.text) > 35_000
-                      or image_count + count > 20):
+                      or image_count + count > 4):
             batches.append(batch)
             batch, text_size, image_count = {}, 0, 0
         if len(unit.text) > 100_000 or count > MAX_IMAGES:
@@ -194,7 +195,7 @@ async def retrieve_related(candidates, query: str, store: Store, provider: Provi
     selected_refs, evidence = set(), []
     for number, batch in enumerate(batches, 1):
         progress(f"{label} {number}/{len(batches)}", 12 + int(8 * (number - 1) / len(batches)))
-        content, pictures = source_content(batch, store, vision)
+        content, pictures = source_content(batch, store, vision, prefer_transcription=True)
         document = next(iter(batch.values()))[0]
         prerequisite_only = document.id in prerequisite_document_ids
         selection_constraint = (
@@ -270,7 +271,9 @@ async def generate_lesson(request: GenerateRequest, documents: list[Document], s
                 ref = f"{document.id}:{index}"
                 chosen[ref] = all_units[ref]
         primary_refs = set(chosen)
-        primary_content, primary_images = validate_material(chosen, store, request.api.vision)
+        validate_material(chosen, store, request.api.vision)
+        primary_content, primary_images = source_content(chosen, store, request.api.vision,
+                                                        prefer_transcription=True)
         roles = {ref: "primary" for ref in primary_refs}
         candidates = {ref: all_units[ref] for ref in visible_units if ref not in primary_refs}
         if candidates:
@@ -312,7 +315,11 @@ async def generate_lesson(request: GenerateRequest, documents: list[Document], s
                 warnings.append(f"《{document.name}》未检索到与本次知识点直接相关的内容。")
     else:
         chosen = all_units
-    material, images = validate_material(chosen, store, request.api.vision)
+    validate_material(chosen, store, request.api.vision)
+    # Planning sees every complete transcript, including chart descriptions and
+    # uncertainty markers. Writing/review still receives the original page images.
+    # Do not send all 40 scanned pages again just to organize their chapters.
+    material, images = source_content(chosen, store, request.api.vision, prefer_transcription=True)
     atomic_json(output / "scope-reasoning.json", {
         "query": retrieval_query,
         "include_prerequisites": request.scope.include_prerequisites,

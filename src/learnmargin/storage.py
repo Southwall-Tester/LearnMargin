@@ -84,6 +84,19 @@ class Store:
     def save_document(self, document: Document) -> None:
         atomic_json(self._metadata("documents", document.id, "document.json"), document.model_dump())
 
+    def transcription_cache(self, document_id: str, index: int) -> Path:
+        if type(index) is not int or index < 1:
+            raise ValueError("无效的材料单元编号。")
+        return self._metadata("documents", document_id, f"transcription-{index}.json")
+
+    def read_transcription_cache(self, document_id: str, index: int) -> dict | None:
+        path = self.transcription_cache(document_id, index)
+        try:
+            value = json.loads(_read_metadata(path))
+            return value if isinstance(value, dict) else None
+        except (OSError, ValueError):
+            return None
+
     def delete_document(self, item_id: str) -> None:
         target = self.directory("documents", item_id).resolve()
         if target.parent != (self.root / "documents").resolve():

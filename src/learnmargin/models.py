@@ -18,6 +18,7 @@ class SourceUnit(Model):
     label: str
     text: str
     image_paths: list[str] = Field(default_factory=list)
+    transcription_complete: bool = False
 
 
 class Document(Model):
@@ -37,6 +38,7 @@ class APIConfig(Model):
     vision: bool = True
     json_mode: bool = True
     timeout_seconds: int = Field(default=180, ge=10, le=600)
+    reasoning_effort: Literal["low", "medium", "high", "max"] | None = None
 
 
 class ConnectionTestResult(Model):

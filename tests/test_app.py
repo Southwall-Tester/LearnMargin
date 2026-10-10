@@ -241,7 +241,8 @@ def test_failed_generation_has_no_downloads(client, monkeypatch):
     request["api"]["api_key"] = "example-key"
     item_id = client.post("/api/jobs", json=request).json()["id"]
     job = wait_job(client, item_id)
-    assert job["status"] == "failed" and job["error"] == "测试中的明确失败"
+    assert job["status"] == "failed" and job["error"] == "准备材料：测试中的明确失败"
+    assert job["failed_stage"] == "准备材料"
     assert job["artifacts"] == {}
 
 

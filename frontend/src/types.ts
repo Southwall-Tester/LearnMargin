@@ -6,6 +6,7 @@ export type APIConfig = {
   json_mode: boolean;
   api_key: string;
   timeout_seconds: number;
+  reasoning_effort?: 'low' | 'medium' | 'high' | 'max' | null;
 };
 
 export type Settings = {
